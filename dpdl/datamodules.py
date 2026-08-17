@@ -1007,7 +1007,7 @@ class NLPDataModule(DataModule):
 
         if self.dataset_path:
             dataset_splits = datasets.load_from_disk(self.dataset_path)
-        elif self.dataset_name == 'wikitext':
+        elif self.dataset_name in ['wikitext', 'Salesforce/wikitext']:
             dataset_splits = datasets.load_dataset(
                 self.dataset_name, 'wikitext-2-raw-v1'
             )
