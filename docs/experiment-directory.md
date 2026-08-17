@@ -1,10 +1,10 @@
 # Experiment directory contents
 
-In this document, we summarize what DPDL writes into the experiment directory `<log_dir>/<experiment_name>`. and when those files appear.
+In this document, we summarize what DPDL writes into the experiment directory `<log_dir>/<experiment_name>` and when those files appear.
 
 ## Location and lifecycle
 
-The experiment directory is `<log_dir>/<experiment_name>`, where the parts are defined by `--log-dir` and `--experiment-name`, is created at the start of any DPDL run.
+The experiment directory is `<log_dir>/<experiment_name>`. Its parts are defined by `--log-dir` and `--experiment-name` and it is created at the start of any DPDL run.
 If `--overwrite-experiment` is set, any existing directory with the same name is removed; otherwise, DPDL tries to resume the experiment.
 
 ## Always‑written artifacts (all commands)
@@ -19,7 +19,7 @@ Written at startup by `start_experiment_logging`:
 The `txt` files are for humans and `json` for computers.
 
 When any command finishes, a `runtime` file is written to the experiment directory.
-As the names suggests, this files contains the time of the run.
+As the name suggests, this file contains the time of the run.
 The existence of this file is a good way to find finished experiments.
 And conversely, unfinished experiments can be found by looking for experiment directories *without* this file.
 
@@ -40,7 +40,6 @@ The parameter counts are:
 Written at the end of training:
 - `test_metrics`: test loss + metrics
 - `final_epsilon`: the resulting epsilon (only in DP mode)
-- `noise_multiplier`: the DP-SGD noise multiplier (only in DP mode)
 
 If `--save-model` is specified also the resulting model is saved as `final_model.pt`.
 
@@ -65,8 +64,8 @@ Files written:
 - `trials.json`, `trials.csv`: full Optuna trials table
 - `best-params.json`: resolved best hyperparameters
 - `best-params-raw-idx.json`: raw Optuna params (ordered indices)
-- `best-value`: best objective value (evaluated on **validation** set)
-- `final-metrics`: metrics from the final evaluation round (evaluted on **test** set)
+- `best-value`: best objective value (evaluated on the **validation** set)
+- `final-metrics`: metrics from the final evaluation round (evaluated on the **test** set)
 - `final_epsilon`, resulting epsilon on the final evaluation round
 - `noise_multiplier`: DP-SGD noise multiplier in the final evaluation round
 - `results-and-configuration.json`: combined summary bundle

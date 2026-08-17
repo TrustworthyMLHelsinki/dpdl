@@ -2,22 +2,22 @@
 
 In this document, we summarize how DPDL handles models, covering three model sources: [PyTorch Image Models (timm)](https://github.com/huggingface/pytorch-image-models), [HuggingFace](https://huggingface.co/models), and custom.
 Further we describe how to use parameter‑efficient fine‑tuning ([PEFT](https://github.com/huggingface/peft)) with the models.
-We aim keeep the document brief and point to code for further details.
+We aim to keep the document brief and point to code for further details.
 
 ## Overview
 
 Model creation happens in [ModelFactory](../dpdl/models/model_factory.py).
 The main selection logic is:
 - If `--task` is a language task (i.e. CausalLM, InstructLM or SequenceClassification), load a HuggingFace model via [HuggingfaceLanguageModel](../dpdl/models/hugging_face_models.py).
-- Otherwise, by default we use `timm` models, unless the model name matches one of the provided, custom models (e.g., `wide_res_net-<depth>-<width>` for [WideResNet](https://arxiv.org/abs/1605.07146) or `koskela-net`).
+- Otherwise, by default we use `timm` models, unless the model name matches one of the provided, custom models (e.g., `wrn-<depth>-<width>` for [WideResNet](https://arxiv.org/abs/1605.07146) or `koskela-net`).
 
-After initialization, we wrap the models in [ModelBase](../dpdl/models/model_base.py) what provides a common interface (e.g. loss, metrics, save/load, etc.) for the underlying models.
+After initialization, we wrap the models in [ModelBase](../dpdl/models/model_base.py), which provides a common interface (e.g. loss, metrics, save/load, etc.) for the underlying models.
 
 ## Timm models (vision)
 
 When `--task` is **not** a language task and the model name does not match a custom model, [ModelFactory](../dpdl/models/model_factory.py) calls `timm.create_model()` to instantiate the requested model.
-The factory gets the parameters from [ConfigurationManager](../dpdl/callbacks/configurationmanager.py) and creates the model as requested.
-The model requested model is specified with `--model-name` CLI switch and loading pretrained weights is controlled by `--pretrained`/`--no-pretrained` switch.
+The factory gets the parameters from [ConfigurationManager](../dpdl/configurationmanager.py) and creates the model as requested.
+The requested model is specified with the `--model-name` CLI switch, and loading pretrained weights is controlled by the `--pretrained`/`--no-pretrained` switch.
 
 ## HuggingFace models (language)
 
@@ -35,7 +35,7 @@ Should you need to implement a custom model, use the above implementations as an
 In essence:
 - Implement a new module under `dpdl/models/` while following the [ModelBase API](../dpdl/models/model_base.py).
 - Extend the checks in [CustomBuilder.matches()](../dpdl/models/custom_builder.py) to match your model.
-- Extend the [CustomBuilder.get_model()](../dpdl/models/custom_builder.py) to instantiate you model correctly
+- Extend [CustomBuilder.get_model()](../dpdl/models/custom_builder.py) to instantiate your model correctly.
 
 ## PEFT (parameter‑efficient fine‑tuning)
 

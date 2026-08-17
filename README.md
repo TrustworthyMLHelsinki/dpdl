@@ -6,6 +6,10 @@
   <b>Experiment framework for Differentially Private Deep Learning</b>
 </h1>
 
+## Tutorials
+
+New to DPDL? Start with [tutorial.ipynb](tutorials/tutorial.ipynb) (training a DP image classifier on a medical dataset) and then [tutorial_hpo.ipynb](tutorials/tutorial_hpo.ipynb) (hyperparameter optimization for that same setup).
+
 ## Installation and usage
 
 ### Prerequisites
@@ -72,25 +76,15 @@ The entry point is [run.py](run.py) (also installed as the `dpdl` CLI).
 
 At minimum, specify `--epochs` (or `--use-steps` with `--total-steps`).
 
-Real-world example (CIFAR-10 + ResNetV2; downloads data and weights):
+A real-world example (CIFAR-10 + ViT tiny). This will download data and weights:
 
 ```bash
-dpdl train --epochs 10 --dataset-name uoft-cs/cifar10 --model-name resnetv2_50x1_bit.goog_in21k --device auto
+dpdl train --epochs 10 --dataset-name uoft-cs/cifar10 --model-name vit_tiny_patch16_224.augreg_in21k --device auto
 ```
 
-Quick CPU sanity check (no downloads; uses the fake dataset):
+## Usage
 
-```bash
-DPDL_FAKE_DATASET=1 dpdl train --epochs 1 --dataset-name fake --model-name resnet18 --device cpu --batch-size 64 --physical-batch-size 32 --num-workers 0
-```
-
-## Architecture
-
-![DPDL Architecture](images/dpdl-architecture.svg)
-
-### How to use?
-
-#### Command line help
+### Command line help
 
 Run `dpdl --help` (or `python run.py --help`).
 
@@ -119,15 +113,11 @@ Example:
   bin/create-run-script.sh run.sh project_462000213 small-g 1
 ```
 
-### Training under DP
+### Training under DP / without DP
 
-Check out [an example](experiments/00-experiment-batch-size-variation/scripts/run.sh)
+See [tutorial.ipynb](tutorials/tutorial.ipynb) for a runnable, end-to-end example (with and without DP).
 
-### Training without DP
-
-Check [an example](experiments/06-few-shot-from-scratch-non-dp/scripts/run.sh)
-
-## High-level architecture
+## Architecture
 
 ![DPDL Architecture](images/dpdl-architecture.svg)
 
@@ -141,35 +131,35 @@ The CLI implementation is in [dpdl/cli.py](dpdl/cli.py)
 
 ### Training
 
-The CLI calls the `fit` method of [trainer](dpdl/trainer.py) 
+The CLI calls the `fit` method of [trainer](dpdl/trainer.py)
 
 ### Hyperparameter optimization
 
 The CLI calls the `optimize_hypers` method of [hyperparameteroptimizer](dpdl/hyperparameteroptimizer.py).
 
-The ranges/options for the different hyperparameters is in `conf/optuna_hypers.conf`.
+The ranges/options for the different hyperparameters is in `conf/optuna/optuna_hypers.conf`.
 
 See the detailed guide: [docs/hyperparameter-optimization.md](docs/hyperparameter-optimization.md).
 
 Example (optimize learning rate and batch size):
 
 ```
-dpdl optimize --target-hypers learning_rate --target-hypers batch_size --n-trials 20 --optuna-config conf/optuna_hypers.conf
+dpdl optimize --target-hypers learning_rate --target-hypers batch_size --n-trials 20 --optuna-config conf/optuna/optuna_hypers.conf
 ```
 
 ### Callbacks
 
-The system provides a flexible [callback system](dpdl/callbacks.py).
+The system provides a flexible [callback system](dpdl/callbacks/callback_factory.py) (see [docs/callbacks.md](docs/callbacks.md)).
 
 ### Add a new dataset?
 
 Create a new [datamodule](dpdl/datamodules.py).
 
-NB: The code currently should support all Huggingface image datasets by using, for example a `--dataset-name cifar100` command line parameter.
+NB: The code currently should support all Huggingface image datasets by using, for example, a `--dataset-name cifar100` command-line parameter.
 
 ### Add a new model?
 
-Create a new model in `dpdl/models` and add it to [models.py](dpdl/models.py).
+Create a new model in `dpdl/models/` and register it in [ModelFactory](dpdl/models/model_factory.py) (see [docs/models.md](docs/models.md) for a detailed description).
 
 ### Add a new optimizer?
 

@@ -1,8 +1,8 @@
 # Callback system
 
 DPDL uses a lightweight callback interface to plug in logging, metrics, and checkpointing without changing the trainer.
-The callback system is akin to the one first introduced in [fastai library](https://github.com/fastai/fastai).
-Callbacks are created via [CallbackFactory](../dpdl/callbacks/callback_factory.py) that constructs the callbacks according to the requested settings in [ConfigurationManager](../dpdl/callbacks/configurationmanager.py).
+The callback system is akin to the one first introduced in the [fastai library](https://github.com/fastai/fastai).
+Callbacks are created via [CallbackFactory](../dpdl/callbacks/callback_factory.py) that constructs the callbacks according to the requested settings in [ConfigurationManager](../dpdl/configurationmanager.py).
 To trigger the callbacks, [Trainer](../dpdl/trainer.py) emits callback events during training, validation, and testing.
 
 ## Events and batch types
@@ -20,7 +20,7 @@ Callbacks receive events for both:
 1) Subclass `Callback` and override only the hooks you need.
 2) If you need step count, override `on_train_batch_end`, and call `super()` to keep `global_step` in sync.
 3) Use `self._is_global_zero()` to avoid duplicated logging in DDP.
-4) Register your callback in `CallbackFactory.get_callbacks()` and add CLI flag for it in .
+4) Register your callback in `CallbackFactory.get_callbacks()` and add a CLI flag for it in [dpdl/cli.py](../dpdl/cli.py) (see `record_snr`, `record_clipping`, etc. for the pattern).
 
 Minimal example:
 
@@ -49,7 +49,7 @@ class MyCallback(Callback):
 
 ## Practical guidance
 
-- If you need statistics on logical batch, you need to accumulate the data via physical batches and then do your magic in `on_train_batch_end`.
+- If you need statistics on a logical batch, you need to accumulate the data via physical batches and then do your magic in `on_train_batch_end`.
 - Similarly, to get epoch statistics, accumulate logical batches (note that this can be memory heavy).
 - **For step-based training (`--use-steps`), epoch callbacks are approximate.** ([See here for explanation](./epochs-vs-steps.md)).
 

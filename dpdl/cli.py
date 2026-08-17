@@ -601,7 +601,7 @@ def cli(
                 help='Configuration file containing ranges/options for hypers',
                 rich_help_panel='Bayesian optimization (Optuna) options',
             )
-        ] = 'conf/optuna_hypers.conf',
+        ] = 'conf/optuna/optuna_hypers.conf',
         metric_config: Annotated[
             Optional[str],
             typer.Option(

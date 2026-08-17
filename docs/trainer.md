@@ -1,6 +1,6 @@
 # Trainer and DifferentiallyPrivateTrainer
 
-This document summarizes how DPDL's trainers manage training, including hanling of data, models, and optimization.
+This document summarizes how DPDL's trainers manage training, including handling of data, models, and optimization.
 We keep the documentation intentionally brief and point to the relevant source files for deeper understanding.
 
 Relevant sources:
@@ -8,15 +8,15 @@ Relevant sources:
 - Metrics setup: [`dpdl/metrics_factory.py`](../dpdl/metrics_factory.py)
 - Model base + metric storage: [`dpdl/models/model_base.py`](../dpdl/models/model_base.py)
 - Callback system: [Callback system](callbacks.md)
-- Step/epoch rounding notes: [Training length and sampling](training-length-and-sampling.md)
+- Step/epoch rounding notes: [Epochs vs steps](epochs-vs-steps.md)
 
 ## Overview
 
 DPDL uses two trainer paths:
 - `Trainer`: standard (non-DP) training loop.
-- `DifferentiallyPrivateTrainer`: extends `Trainer` and employes [Opacus](https://github.com/meta-pytorch/opacus/) for DP.
+- `DifferentiallyPrivateTrainer`: extends `Trainer` and employs [Opacus](https://github.com/meta-pytorch/opacus/) for DP.
 
-`TrainerFactory` initializes a [datamodule](../dpdl/datamodules.py), a [model](../dpdl/models/model_base.py), an [optimizer](../dpdl/optimizers.py), and [callbacks](./callbacks.md) and [metrics](../dpdl/metrics_factory.py) based on the configuration passed in [ConfigurationManager](../dpdl/callbacks/configurationmanager.py).
+`TrainerFactory` initializes a [datamodule](../dpdl/datamodules.py), a [model](../dpdl/models/model_base.py), an [optimizer](../dpdl/optimizers.py), and [callbacks](./callbacks.md) and [metrics](../dpdl/metrics_factory.py) based on the configuration passed in [ConfigurationManager](../dpdl/configurationmanager.py).
 
 ## Metrics
 
@@ -28,7 +28,7 @@ Metrics live in the [model](../dpdl/models/model_base.py) (`train_metrics`, `val
 
 `MetricsFactory` always initialises a task-appropriate baseline set:
 
-- **Classification** (`ImageClassification`, `SequenceClassification`): macro and micro `MulticlassAccuracy` per class, and a `ConfusionMatrix` on the test split.
+- **Classification** (`ImageClassification`, `SequenceClassification`): macro-, micro-, and per-class-averaged `MulticlassAccuracy`, and a `ConfusionMatrix` on the test split.
 - **Language modelling** (`CausalLM`, `InstructLM`): micro `MulticlassAccuracy` and `Perplexity`.
 
 ### Custom metrics
@@ -73,19 +73,19 @@ The core loop lives in `Trainer.fit()` and chooses between:
 _Note: Please install [our Opacus fork](https://github.com/DPBayes/opacus) to use the step mode._
 
 When `--use-steps` is enabled, epoch counts are **approximate** and derived from batch size and dataset size.
-This behavior is documented in [Training length and sampling](training-length-and-sampling.md).
+This behavior is documented in [Epochs vs steps](epochs-vs-steps.md).
 
 ## Logical vs physical batches
 
 DPDL supports gradient accumulation for both DP and non-DP paths.
 This means that logical batches are divided into **physical batches** (or *micro-batches*) that fit in memory according to physical batch size (`--physical-batch-size`).
-If you GPU is spinning below 100%, a first tuning step to improve performance would be to increase the physical batch size.
+If your GPU is spinning below 100%, a first tuning step to improve performance would be to increase the physical batch size.
 
 For e.g. calculating batch statistics, use the [Callback system](callbacks.md) that receives events for both logical and physical batches.
 
 ## DifferentiallyPrivateTrainer
 
-In addition to basic `Trainer` functionality, `DifferentiallyPrivateTrainer` create an Opacus [Privacy Engine](https://opacus.ai/api/privacy_engine.html) to manage differential privacy.
+In addition to basic `Trainer` functionality, `DifferentiallyPrivateTrainer` creates an Opacus [Privacy Engine](https://opacus.ai/api/privacy_engine.html) to manage differential privacy.
 For this, we:
 - Wrap the model in DP-aware modules.
 - Replace the training dataloader with a DP-compatible sampler.

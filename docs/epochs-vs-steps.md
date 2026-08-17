@@ -1,7 +1,7 @@
 # Epochs vs steps, rounding errors in logging, and sample-rate rounding
 
 DPDL supports both epoch-based and step-based training.
-Under the hood, Opacus uses Poisson sampling, so the number of optimizer updates per epoch is depends from the sampling scheme.
+Under the hood, Opacus uses Poisson sampling, so the number of optimizer updates per epoch depends on the sampling scheme.
 This section documents how `--use-steps`, `--epochs`, and `--total-steps` interact, why rounding appears in logs, and why this mirrors Opacus behavior.
 
 We will use `S` for steps, `N` for the size of the dataset, `B` for batch sizes, `E` for epochs.
@@ -56,7 +56,7 @@ When `total_steps` is not provided, Opacus computes:
 - [UniformSampler](https://github.com/meta-pytorch/opacus/blob/f17f254ab8f1f1095e8257bf278769d549748bbc/opacus/privacy_engine.py#L408) uses `steps = int(1 / sample_rate)`.
 
 With standard dataloaders, `len(data_loader) = ceil(N / B)`, so Opacus implicitly rounds to `ceil(N / B)` steps per epoch.
-DPDL uses the same conversion actual so step counts are consistent with Opacus.
+DPDL uses the same conversion, so step counts are consistent with Opacus.
 
 ## Sample-rate: discrete vs smooth
 

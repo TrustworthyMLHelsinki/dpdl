@@ -10,6 +10,10 @@ Relevant sources:
 - Ordered search space example: [`conf/optuna_hypers_ordered.conf`](../conf/optuna/optuna_hypers_ordered.conf)
 - Manual trials example: [`conf/optuna_trials.conf`](../conf/optuna/optuna_trials.conf)
 
+For a hands-on, end-to-end walkthrough (search space, manual trials, running
+`dpdl optimize`, and the reporting/aggregation scripts under `bin/`), see
+[tutorial_hpo.ipynb](../tutorials/tutorial_hpo.ipynb).
+
 ## Overview
 
 When running `dpdl optimize`, the DPDL system starts an Optuna study on rank 0 and broadcasts the best hyperparameters (of each trial) to all ranks.
@@ -54,10 +58,10 @@ Gotchas:
 
 Core flags for HPO:
 - `--target-hypers`: list of hyperparameters to optimize (required). (Repeat the switch to provide multiple values.)
-- `--optuna-config`: search space file (default `conf/optuna_hypers.conf`).
+- `--optuna-config`: search space file (default `conf/optuna/optuna_hypers.conf`).
 - `--optuna-manual-trials`: optional manual trials file.
 - `--optuna-target-metric`: objective metric (`loss` or a metric key, such as `MulticlassAccuracy`).
-- `--optuna-direction`: `minimize` or `maximize`, indicating should we try to minimize (e.g. loss) or maximize (e.g. accuracy) the optimization objective.
+- `--optuna-direction`: `minimize` or `maximize`, indicating whether to minimize (e.g. loss) or maximize (e.g. accuracy) the optimization objective.
 - `--n-trials`: total number of trials.
 - `--optuna-random-trials`: warmup random trials (Optuna defaults to 10 completely random trial before starting its algorithm).
 - `--optuna-resume`: to resume an existing study with the same experiment name.
