@@ -104,7 +104,7 @@ def download_generic_huggingface_model(
                 param.requires_grad = False
 
     else:
-        model = AutoModelForCausalLM.from_pretrained(
+        model = AutoModelForCausalLM.from_pretrained( # source for loss=None warning later
             checkpoint_or_not(model_name, checkpoint_dir, peft), **load_kwargs
         )
 
