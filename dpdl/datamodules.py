@@ -11,6 +11,65 @@ from .configurationmanager import Configuration, Hyperparameters
 
 log = logging.getLogger(__name__)
 
+# Fields in the sarus-tech/medical_v3 dataset that we evaluate for memorisation / utility.
+# 'disease' is the target label (utility); the rest are personal identifiers (PII leakage).
+DISEASE_EVAL_FIELDS = ['name', 'country', 'occupation', 'hobby', 'symptoms', 'treatment']
+
+_LEADING_ARTICLE_RE = re.compile(r'^\s*(the|a|an)\s+', re.IGNORECASE)
+
+def normalize_disease_text(name: str) -> str:
+    """Canonicalize a disease label.
+
+    Strips leading articles and surrounding whitespace so the same form is
+    used across training (the prepend in the collate), evaluation (substring
+    match + log-prob span), and the confusion matrix. Some labels in the
+    sarus-tech/medical_v3 dataset include "The" / "A" / "An" while the
+    narrative answer drops them, which would otherwise yield false-negative
+    substring matches and split-credit between two surface forms of the same
+    disease.
+    """
+    return _LEADING_ARTICLE_RE.sub('', name).strip()
+
+# Emoji ranges from the Unicode standard. Covers emoticons, pictographs,
+# transport/map symbols, supplemental pictographs (incl. recent additions),
+# misc symbols, dingbats, regional indicators (flags), zero-width joiner
+# (compound emojis), and variation selector / keycap combiners.
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F600-\U0001F64F"   # emoticons
+    "\U0001F300-\U0001F5FF"   # symbols & pictographs
+    "\U0001F680-\U0001F6FF"   # transport & map symbols
+    "\U0001F700-\U0001F77F"   # alchemical
+    "\U0001F780-\U0001F7FF"   # geometric shapes extended
+    "\U0001F800-\U0001F8FF"   # supplemental arrows-C
+    "\U0001F900-\U0001F9FF"   # supplemental symbols and pictographs
+    "\U0001FA00-\U0001FA6F"   # chess
+    "\U0001FA70-\U0001FAFF"   # symbols and pictographs extended-A
+    "\U00002600-\U000026FF"   # misc symbols
+    "\U00002700-\U000027BF"   # dingbats
+    "\U0001F1E6-\U0001F1FF"   # regional indicator (flags)
+    "‍"                  # zero-width joiner
+    "️"                  # variation selector-16 (emoji presentation)
+    "⃣"                  # combining enclosing keycap
+    "]+",
+    flags=re.UNICODE,
+)
+
+
+def strip_emojis(text: str) -> str:
+    """Remove emoji characters from `text`.
+
+    The fine-tuned model under DP noise tends to emit decorative emojis at the
+    start of its generation (a base-model prior amplified by gradient noise),
+    sometimes immediately preceding the disease name. Substring search still
+    finds the disease either way, but stripping emojis up-front makes the
+    behaviour explicit, prevents subtle edge cases where an emoji might fuse
+    with the disease in the decoded text, and produces cleaner per-disease
+    breakdowns when the predicted text is logged.
+    """
+    return _EMOJI_RE.sub('', text)
+
+
 
 
 class DataModule:
@@ -1130,7 +1189,7 @@ class NLPDataModule(DataModule):
                 collate_fn=collate_fn,
                 num_workers=self.num_workers,
             )
-            if self.task == 'InstructLM':
+            if self.task in ['InstructLM','DiseaseTask']:
                 self._dataloaders['sample'] = torch.utils.data.DataLoader(
                     self.test_dataset,
                     sampler=self.test_sampler,
@@ -1147,6 +1206,14 @@ class NLPDataModule(DataModule):
         label_field = self._label_field
         max_len = self.max_length
         task = self.task
+
+        # For DiseaseTask, capture int->text mapping so the collate can build a
+        # short, disease-anchored assistant turn. Falls back to None for non-disease
+        # tasks where label_field may be missing or non-ClassLabel.
+        disease_int2str = None
+        if task == 'DiseaseTask' and label_field is not None:
+            train_label_feature = self._dataset_splits['train'].features[label_field]
+            disease_int2str = train_label_feature.int2str
 
         def collate(batch):
             texts = [
@@ -1229,6 +1296,68 @@ class NLPDataModule(DataModule):
 
             return tokenized, labels
 
+        def collate_instruct_function_disease(batch):
+            # Prepend the disease label to the assistant turn so the supervised
+            # window is anchored on the diagnosis, regardless of `max_length`.
+            # Without this, long user narratives push the disease past the
+            # truncation cap and the loss never sees the answer.
+            def _assistant_content(sample):
+                # Normalize so the supervised disease string matches the form
+                # that actually appears in the narrative (e.g. drops leading
+                # articles). Keeps training and eval using the same canonical
+                # surface form.
+                disease_text = normalize_disease_text(disease_int2str(sample[label_field]))
+                return f"Diagnosis: {disease_text}. {sample['answer']}"
+
+            conversations = [
+                tokenizer.apply_chat_template(
+                    [
+                        {'role': 'user', 'content': sample['question']},
+                        {'role': 'assistant', 'content': _assistant_content(sample)},
+                    ],
+                    tokenize=False,
+                    add_generation_prompt=False,
+                )
+                for sample in batch
+            ]
+
+            tokenized = tokenizer(
+                conversations,
+                padding=True,
+                truncation=True,
+                max_length=max_len,
+                return_tensors='pt',
+                add_special_tokens=True,
+            )
+
+            # Mask the user portion out of the loss (same as InstructLM).
+            user_texts = [
+                tokenizer.apply_chat_template(
+                    [{'role': 'user', 'content': q['question']}],
+                    tokenize=False,
+                    add_generation_prompt=True,
+                )
+                for q in batch
+            ]
+
+            user_tokenized = tokenizer(
+                user_texts, add_special_tokens=True, padding=False
+            )
+
+            labels = tokenized['input_ids'].clone()
+
+            for i, user_ids in enumerate(user_tokenized['input_ids']):
+                user_len = len(user_ids)
+                labels[i, :user_len] = -100
+
+            labels[labels == tokenizer.pad_token_id] = -100
+
+            tokenized['labels'] = labels
+
+            return tokenized, labels
+
+        if task == 'DiseaseTask':
+            return collate_instruct_function_disease
         return collate_instruct_function if task == 'InstructLM' else collate
 
     def tokenize_for_sample(self, batch):
@@ -1240,17 +1369,80 @@ class NLPDataModule(DataModule):
             )
             for sample in batch
         ]
-        # Tokenize the text already in chat format
-        tokenized = self.tokenizer(
-            conversations,
-            padding=True,
-            truncation=True,
-            max_length=self.max_length,
-            return_tensors='pt',
-            add_special_tokens=True,
-        )
+
+        # For DiseaseTask: prefill the assistant turn with the SAME "Diagnosis: "
+        # prefix used in training (see collate_instruct_function_disease). The model
+        # was trained to emit the disease name immediately after this anchor, so
+        # filling it in turns generation from open-ended response into
+        # "complete the diagnosis" — easier to learn, easier to grade, and the
+        # disease appears in the first few generated tokens.
+        # NOTE: the string here MUST match the training-side prefix exactly
+        # (including the trailing space) or the join-point tokens drift.
+        is_disease_task = (self.task == 'DiseaseTask')
+        if is_disease_task:
+            conversations = [c + 'Diagnosis: ' for c in conversations]
+
+        # The prefill sits at the END of the prompt and is load-bearing — it
+        # cues the model to emit a diagnosis. With the default right-truncation,
+        # a prompt that exceeds max_length would have the prefill chopped off
+        # and we'd be back to open-ended generation. Switch to left-truncation
+        # for DiseaseTask sampling so the END (assistant marker + Diagnosis
+        # prefill) is preserved at the cost of dropping the START of the user
+        # message. Relies only on the standard `truncation_side` attribute.
+        saved_truncation_side = self.tokenizer.truncation_side
+        if is_disease_task:
+            self.tokenizer.truncation_side = 'left'
+        try:
+            # Tokenize the text already in chat format
+            tokenized = self.tokenizer(
+                conversations,
+                padding=True,
+                truncation=True,
+                max_length=self.max_length,
+                return_tensors='pt',
+                add_special_tokens=True,
+            )
+        finally:
+            if is_disease_task:
+                self.tokenizer.truncation_side = saved_truncation_side
+
+        if is_disease_task:
+            # Collect raw string values for each evaluation field so the adapter
+            # can check which fields appear in the generated output (utility + PII leakage).
+            raw_fields = {
+                field: [str(sample.get(field, '')) for sample in batch]
+                for field in DISEASE_EVAL_FIELDS
+            }
+            if self._label_field is not None:
+                raw_fields['_disease_id'] = torch.tensor(
+                    [sample[self._label_field] for sample in batch], dtype=torch.long
+                )
+            return tokenized, raw_fields
 
         return tokenized
+
+    def _get_distributed_dataloader(self, name):
+        """Return a rank-sharded copy of the `name` eval dataloader.
+
+        Eval loaders aren't sharded by DDP / the privacy engine, so without this
+        each rank would evaluate the full set and any per-rank all_reduce (e.g.
+        disease accuracy) would inflate counts by the world size.
+        """
+        dataloader = self.get_dataloader(name)
+        sampler = DistributedSampler(
+            dataloader.dataset,
+            num_replicas=torch.distributed.get_world_size(),
+            rank=torch.distributed.get_rank(),
+            shuffle=False,  # no shuffling for eval
+        )
+        return torch.utils.data.DataLoader(
+            dataloader.dataset,
+            batch_size=dataloader.batch_size // torch.distributed.get_world_size(),
+            sampler=sampler,
+            num_workers=dataloader.num_workers,
+            pin_memory=dataloader.pin_memory,
+            collate_fn=dataloader.collate_fn,
+        )
 
     def decode(self, generated_ids):
         return self.tokenizer.batch_decode(generated_ids, skip_special_tokens=True)
