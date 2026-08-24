@@ -212,7 +212,7 @@ def cli(
         task: Annotated[
             str,
             typer.Option(
-                help='Training task [ImageClassification, SequenceClassification, CausalLM, InstructLM]',
+                help='Training task [ImageClassification, SequenceClassification, CausalLM, InstructLM, DiseaseTask]',
                 rich_help_panel='Training options',
             )
         ] = 'ImageClassification',

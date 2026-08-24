@@ -82,7 +82,7 @@ class Configuration(BaseModel):
     dataset_name: str = 'uoft-cs/cifar10'
     dataset_path: Optional[str] = None
     llm: bool = False
-    task: Literal['ImageClassification', 'SequenceClassification', 'CausalLM', 'InstructLM' ] = 'ImageClassification'
+    task: Literal['ImageClassification', 'SequenceClassification', 'CausalLM', 'InstructLM', 'DiseaseTask'] = 'ImageClassification'
     physical_batch_size: int = 40
     num_workers: int = 7
     validation_frequency: float = 1.0
