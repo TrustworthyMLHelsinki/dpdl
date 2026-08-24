@@ -1,10 +1,12 @@
 import logging
+import re
 from collections import Counter
 from functools import partial
 
 import datasets
 import torch
 import torchvision
+from torch.utils.data import DistributedSampler
 from PIL import Image
 
 from .configurationmanager import Configuration, Hyperparameters
@@ -376,46 +378,91 @@ class DataModule:
             self.val_dataset = self._dataset_splits['validation']
             self.test_dataset = self._dataset_splits['test']
 
-        # No validation or test splist, create both
-        if not has_validation_split and not has_test_split:
-            # Split the training dataset into training and validation
-            self.train_dataset, val_and_test_split = self._dataset_splits['train'].train_test_split(
-                test_size=(self.test_size + self.val_size),
-                seed=self.split_seed,
-                shuffle=True,
-                stratify_by_column=self._label_field,
-            ).values()
+        # When a label field is available we stratify the splits; some datasets
+        # (e.g. plain CausalLM without labels) have _label_field is None, in
+        # which case stratify_by_column would fail, so we split unstratified.
+        if self._label_field is not None:
+            # No validation or test splist, create both
+            if not has_validation_split and not has_test_split:
+                # Split the training dataset into training and validation
+                self.train_dataset, val_and_test_split = self._dataset_splits['train'].train_test_split(
+                    test_size=(self.test_size + self.val_size),
+                    seed=self.split_seed,
+                    shuffle=True,
+                    stratify_by_column=self._label_field,
+                ).values()
 
-            self.val_dataset, self.test_dataset = val_and_test_split.train_test_split(
-                test_size=0.5,
-                seed=self.split_seed,
-                shuffle=True,
-                stratify_by_column=self._label_field,
-            ).values()
+                # Rare classes (<2 samples) can make a stratified 50/50 split
+                # impossible; fall back to an unstratified split in that case.
+                try:
+                    self.val_dataset, self.test_dataset = val_and_test_split.train_test_split(
+                        test_size=0.5,
+                        seed=self.split_seed,
+                        shuffle=True,
+                        stratify_by_column=self._label_field,
+                    ).values()
+                except ValueError:
+                    self.val_dataset, self.test_dataset = val_and_test_split.train_test_split(
+                        test_size=0.5,
+                        seed=self.seed,
+                        shuffle=True,
+                    ).values()
 
-        # We have only test split, create validation split from train
-        if not has_validation_split and has_test_split:
-            # Split the training dataset into training and validation
-            self.train_dataset, self.val_dataset = self._dataset_splits['train'].train_test_split(
-                test_size=self.test_size,
-                seed=self.split_seed,
-                shuffle=True,
-                stratify_by_column=self._label_field,
-            ).values()
+            # We have only test split, create validation split from train
+            if not has_validation_split and has_test_split:
+                # Split the training dataset into training and validation
+                self.train_dataset, self.val_dataset = self._dataset_splits['train'].train_test_split(
+                    test_size=self.test_size,
+                    seed=self.split_seed,
+                    shuffle=True,
+                    stratify_by_column=self._label_field,
+                ).values()
 
-            self.test_dataset = self._dataset_splits['test']
+                self.test_dataset = self._dataset_splits['test']
 
-        if has_validation_split and not has_test_split:
-            # Keep the original train split
-            self.train_dataset = self._dataset_splits['train']
+            if has_validation_split and not has_test_split:
+                # Keep the original train split
+                self.train_dataset = self._dataset_splits['train']
 
-            # Split the validation into validation and test (50/50)
-            self.val_dataset, self.test_dataset = self._dataset_splits['validation'].train_test_split(
-                test_size=0.5,
-                seed=self.split_seed,
-                shuffle=True,
-                stratify_by_column=self._label_field,
-            ).values()
+                # Split the validation into validation and test (50/50)
+                self.val_dataset, self.test_dataset = self._dataset_splits['validation'].train_test_split(
+                    test_size=0.5,
+                    seed=self.split_seed,
+                    shuffle=True,
+                    stratify_by_column=self._label_field,
+                ).values()
+        else:
+            # No label field: split without stratification.
+            if not has_validation_split and not has_test_split:
+                self.train_dataset, val_and_test_split = self._dataset_splits['train'].train_test_split(
+                    test_size=(self.test_size + self.val_size),
+                    seed=self.seed,
+                    shuffle=True,
+                ).values()
+
+                self.val_dataset, self.test_dataset = val_and_test_split.train_test_split(
+                    test_size=0.5,
+                    seed=self.seed,
+                    shuffle=True,
+                ).values()
+
+            if not has_validation_split and has_test_split:
+                self.train_dataset, self.val_dataset = self._dataset_splits['train'].train_test_split(
+                    test_size=self.test_size,
+                    seed=self.seed,
+                    shuffle=True,
+                ).values()
+
+                self.test_dataset = self._dataset_splits['test']
+
+            if has_validation_split and not has_test_split:
+                self.train_dataset = self._dataset_splits['train']
+
+                self.val_dataset, self.test_dataset = self._dataset_splits['validation'].train_test_split(
+                    test_size=0.5,
+                    seed=self.seed,
+                    shuffle=True,
+                ).values()
 
         if self.evaluation_mode:
             # Combine training and validation sets if we have a separate validation set
