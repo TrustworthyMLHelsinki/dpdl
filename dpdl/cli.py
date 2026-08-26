@@ -65,7 +65,7 @@ def cli(
         use_steps: Annotated[
             bool,
             typer.Option(
-                help='Use steps instead of epochs',
+                help='Convert --epochs into an equivalent step count',
                 rich_help_panel='Training options',
             )
         ] = False,
