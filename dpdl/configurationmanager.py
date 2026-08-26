@@ -154,6 +154,9 @@ class Configuration(BaseModel):
     predict_dataset_split: Optional[str] = 'test'
     prediction_save_gradient_data: Optional[bool] = False
     load_in_4bit: bool = False
+    wandb_logging: bool = False
+    wandb_username: Optional[str] = None
+    wandb_project_name: Optional[str] = None
 
     class Config:
         # Fix Pydantic warning:
@@ -287,6 +290,7 @@ class Configuration(BaseModel):
             ('Metric configuration', self.metric_config),
             ('LLM use', self.llm),
             ('Task', self.task),
+            ('Wandb logging', self.wandb_logging),
         ]
 
         if self.privacy:
@@ -331,6 +335,7 @@ class ConfigurationManager:
 
         self.configuration = Configuration(**cli_params)
         self.hyperparams = Hyperparameters(**cli_params)
+        self.wandb_params = {'wandb_username': self._cli_params['wandb_username'], 'wandb_project': self._cli_params['wandb_project']} if self._cli_params['wandb_logging'] else None
 
         # remove the target hypers from hyperparams as they will be set in trials
         for target_hyper in self.configuration.target_hypers:
