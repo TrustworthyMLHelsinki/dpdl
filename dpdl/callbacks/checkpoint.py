@@ -47,8 +47,9 @@ class CheckpointCallback(Callback):
         os.makedirs(self.checkpoints_dir, exist_ok=True)
 
         # Initialize mean metric for accumulating train loss over interval
+        # sync_on_compute=True (default) so compute() reduces into the global mean across the distributed group.
         device = device or torch.device('cuda')
-        self.interval_loss = torchmetrics.aggregation.MeanMetric(sync_on_compute=False).to(device)
+        self.interval_loss = torchmetrics.aggregation.MeanMetric().to(device)
 
     def on_train_start(self, trainer):
         super().on_train_start(trainer)
@@ -58,75 +59,78 @@ class CheckpointCallback(Callback):
             self.save_checkpoint(trainer, checkpoint_path)
 
     def on_train_batch_end(self, trainer, batch_idx, batch, loss, **kwargs):
-
-        if not self._is_global_zero():
-            return
-
-        # Update loss aggregator with current batch loss
+        # Accumulate on every rank, because loss is rank-local
+        # update() reduces this into the global mean.
         self.interval_loss.update(loss)
         self.global_step += 1
 
         interval_checkpoint = self.checkpoint_step_interval and self.global_step % self.checkpoint_step_interval == 0
         if interval_checkpoint or self.global_step in self.checkpoint_steps:
-            checkpoint_path = os.path.join(
-                self.checkpoints_dir, f'checkpoint_step_{self.global_step}.pt'
-            )
-
-            self.save_checkpoint(trainer, checkpoint_path)
+            if self._is_global_zero():
+                checkpoint_path = os.path.join(
+                    self.checkpoints_dir, f'checkpoint_step_{self.global_step}.pt'
+                )
+                self.save_checkpoint(trainer, checkpoint_path)
 
             # Exact checkpoints are state snapshots. Validate only at the last one.
+            # Decided identically on every rank, so all ranks skip or validate together.
             final_exact_checkpoint = self.checkpoint_steps and self.global_step == max(self.checkpoint_steps)
             if not interval_checkpoint and not final_exact_checkpoint:
                 return
 
-            trainer.validate(enable_callbacks=False)
-            metrics = trainer._unwrap_model().valid_metrics.compute()
-            trainer._unwrap_model().valid_metrics.reset()
+            # All ranks must participate because _evaluate uses collective ops to return global metrics
+            val_loss, metrics = trainer.validate(enable_callbacks=False)
 
             # Compute the average train loss since the last checkpoint
+            # compute() syncs across ranks, so every rank must call it
+            # Only rank 0 writes the metrics file.
             avg_train_loss = self.interval_loss.compute().item()
             self.interval_loss.reset()
 
-            # Add the average train loss to the metrics dictionary
+            if self._is_global_zero():
+                # Add the average train loss to the metrics dictionary
+                metrics = {
+                    'loss': val_loss,
+                    'avg_train_loss_since_last_checkpoint': avg_train_loss,
+                    **metrics,
+                }
+
+                metrics_path = os.path.join(
+                    self.checkpoints_dir, f'checkpoint_step_{self.global_step}_metrics.json'
+                )
+                self.save_metrics(metrics, metrics_path)
+
+    def on_train_end(self, trainer, *args, **kwargs):
+        # The last exact checkpoint and its metrics were already saved at batch end.
+        # Checked on every rank (global_step is in sync) so all ranks agree before
+        # the collective validate() below.
+        if self.checkpoint_steps and self.global_step == max(self.checkpoint_steps):
+            return
+
+        if self._is_global_zero():
+            final_checkpoint_path = os.path.join(
+                self.checkpoints_dir, f'final_checkpoint_step_{self.global_step}.pt'
+            )
+            self.save_checkpoint(trainer, final_checkpoint_path)
+
+        val_loss, metrics = trainer.validate(enable_callbacks=False)
+
+        # Compute avg loss since last checkpoint across ranks, every rank must call it
+        # Only rank 0 writes the metrics file
+        avg_train_loss = self.interval_loss.compute().item()
+        self.interval_loss.reset()
+
+        if self._is_global_zero():
             metrics = {
-                'loss': loss,
+                'loss': val_loss,
                 'avg_train_loss_since_last_checkpoint': avg_train_loss,
                 **metrics,
             }
 
             metrics_path = os.path.join(
-                self.checkpoints_dir, f'checkpoint_step_{self.global_step}_metrics.json'
+                self.checkpoints_dir, f'final_checkpoint_step_{self.global_step}_metrics.json'
             )
             self.save_metrics(metrics, metrics_path)
-
-    def on_train_end(self, trainer, *args, **kwargs):
-        if not self._is_global_zero():
-            return
-
-        # The last exact checkpoint and its metrics were already saved at batch end.
-        if self.checkpoint_steps and self.global_step == max(self.checkpoint_steps):
-            return
-
-        final_checkpoint_path = os.path.join(
-            self.checkpoints_dir, f'final_checkpoint_step_{self.global_step}.pt'
-        )
-        self.save_checkpoint(trainer, final_checkpoint_path)
-
-        trainer.validate(enable_callbacks=False)
-        metrics = trainer._unwrap_model().valid_metrics.compute()
-        trainer._unwrap_model().valid_metrics.reset()
-
-        # Compute avg loss since last checkpoint
-        avg_train_loss = self.interval_loss.compute().item()
-        self.interval_loss.reset()
-
-        metrics['avg_train_loss_since_last_checkpoint'] = avg_train_loss
-
-        metrics_path = os.path.join(
-            self.checkpoints_dir, f'final_checkpoint_step_{self.global_step}_metrics.json'
-        )
-
-        self.save_metrics(metrics, metrics_path)
 
     def save_checkpoint(self, trainer, checkpoint_path: str):
         if self.checkpoint_steps:

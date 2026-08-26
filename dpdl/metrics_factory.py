@@ -231,9 +231,8 @@ class MetricsFactory:
         metric_config = getattr(configuration, 'metric_config', None)
         metric_config = CustomMetricsFactory.read_metric_config(metric_config) if metric_config else None
 
-        # we only validate on rank 0, so there's no need to
-        # synchronize when calculating the metrics.
-        train_sync, eval_sync = True, False
+        # we explicitly validate on all ranks
+        train_sync, eval_sync = True, True
 
         if task in ('ImageClassification', 'SequenceClassification'):
             if torch.distributed.get_rank() == 0:

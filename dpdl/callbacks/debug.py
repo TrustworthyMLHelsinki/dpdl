@@ -9,10 +9,6 @@ class DebugProbeCallback(Callback):
     def __init__(self):
         super().__init__()
 
-    def _is_global_zero(self):
-        log.info(f"[DEBUG - RANK {torch.distributed.get_rank()}] Calling _is_global_zero")
-        super().__is_global_zero()
-
     def on_train_start(self, trainer):
         log.info(f"[DEBUG - RANK {torch.distributed.get_rank()}] on_train_start")
 
@@ -40,7 +36,7 @@ class DebugProbeCallback(Callback):
     def on_validation_epoch_start(self, trainer, epoch):
         log.info(f"[DEBUG - RANK {torch.distributed.get_rank()}] on_validation_epoch_start")
 
-    def on_validation_epoch_end(self, trainer, epoch, metrics):
+    def on_validation_epoch_end(self, trainer, epoch, metrics, loss):
         log.info(f"[DEBUG - RANK {torch.distributed.get_rank()}] on_validation_epoch_end")
 
     def on_validation_batch_start(self, trainer, batch_idx, batch):
@@ -52,7 +48,7 @@ class DebugProbeCallback(Callback):
     def on_test_epoch_start(self, trainer, epoch):
         log.info(f"[DEBUG - RANK {torch.distributed.get_rank()}] on_test_epoch_start")
 
-    def on_test_epoch_end(self, trainer, epoch, metrics):
+    def on_test_epoch_end(self, trainer, epoch, metrics, loss):
         log.info(f"[DEBUG - RANK {torch.distributed.get_rank()}] on_test_epoch_end")
 
     def on_test_batch_start(self, trainer, batch_idx, batch):

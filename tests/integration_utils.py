@@ -8,28 +8,48 @@ from pathlib import Path
 import pytest
 
 
-def run_command(cmd: list[str], env: dict, cwd: Path) -> subprocess.CompletedProcess:
-    result = subprocess.run(
-        cmd,
-        cwd=cwd,
-        env=env,
-        capture_output=True,
-        text=True,
-    )
+def run_command(
+    cmd: list[str],
+    env: dict,
+    cwd: Path,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess:
+    try:
+        result = subprocess.run(
+            cmd,
+            cwd=cwd,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as exc:
+        pytest.fail(
+            f'Command timed out after {timeout}s:\n'
+            f'{" ".join(cmd)}\n'
+            f'{exc.stderr or ""}'
+        )
+
     assert result.returncode == 0, result.stderr
     return result
 
 
-def run_distributed(cmd_args: list[str], env: dict, cwd: Path) -> subprocess.CompletedProcess:
+def run_distributed(
+    cmd_args: list[str],
+    env: dict,
+    cwd: Path,
+    nproc: int = 1,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess:
     cmd = [
         sys.executable,
         '-m',
         'torch.distributed.run',
         '--standalone',
-        '--nproc_per_node=1',
+        f'--nproc_per_node={nproc}',
         *cmd_args,
     ]
-    return run_command(cmd, env, cwd)
+    return run_command(cmd, env, cwd, timeout=timeout)
 
 
 def load_json(path: Path) -> dict:

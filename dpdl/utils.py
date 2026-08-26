@@ -10,6 +10,18 @@ import torch
 log = logging.getLogger(__name__)
 
 
+def is_global_zero() -> bool:
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        return torch.distributed.get_rank() == 0
+    return True
+
+
+def distributed_world_size() -> int:
+    if torch.distributed.is_available() and torch.distributed.is_initialized():
+        return torch.distributed.get_world_size()
+    return 1
+
+
 def seed_everything(seed) -> None:
     if not seed:
         return

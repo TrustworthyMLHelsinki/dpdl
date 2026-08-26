@@ -18,9 +18,6 @@ class RecordEpochStatsCallback(Callback):
 
         device = device or torch.device('cuda')
         self.train_loss = torchmetrics.aggregation.MeanMetric().to(device)
-        self.evaluation_loss = torchmetrics.aggregation.MeanMetric(
-            sync_on_compute=False
-        ).to(device)
 
         # Do not log these metrics
         self._metrics_to_ignore = [
@@ -70,27 +67,15 @@ class RecordEpochStatsCallback(Callback):
     def on_train_batch_end(self, trainer, batch_idx, batch, loss):
         self.train_loss.update(loss)
 
-    def on_validation_epoch_end(self, trainer, epoch, metrics):
-        loss = self.evaluation_loss.compute()
-        self.evaluation_loss.reset()
-
+    def on_validation_epoch_end(self, trainer, epoch, metrics, loss):
         if self._is_global_zero():
             log.info(f"Validation finished. Loss: {loss:.4f}.")
             self._log_metrics(metrics, "Validation metrics")
 
-    def on_validation_batch_end(self, trainer, batch_idx, batch, loss):
-        self.evaluation_loss.update(loss)
-
-    def on_test_epoch_end(self, trainer, epoch, metrics):
-        loss = self.evaluation_loss.compute()
-        self.evaluation_loss.reset()
-
+    def on_test_epoch_end(self, trainer, epoch, metrics, loss):
         if self._is_global_zero():
             log.info(f"Test finished. Loss: {loss:.4f}.")
             self._log_metrics(metrics, "Test metrics")
-
-    def on_test_batch_end(self, trainer, batch_idx, batch, loss):
-        self.evaluation_loss.update(loss)
 
     def _log_metrics(self, metrics, annotation="Metrics"):
         if not metrics:
