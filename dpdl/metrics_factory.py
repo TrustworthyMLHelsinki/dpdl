@@ -1,4 +1,5 @@
 import logging
+import warnings
 from typing import Any, Dict, Optional
 
 import torch
@@ -129,6 +130,89 @@ class LanguageModelMetrics(torchmetrics.MetricCollection):
 
         return None
 
+class CustomAccuracyLog(torchmetrics.Metric):
+    """A log-only metric that just stores a pre-computed scalar.
+
+    The DiseaseTask generation eval (evaluate_diseases_accuracy_exact_matching)
+    already aggregates its counts across ranks via all_reduce and then only rank
+    0 calls update(). We therefore disable torchmetrics' own sync
+    (sync_on_compute=False) so it doesn't all-reduce again and divide by the
+    world size, yielding a value that is too low by a factor of world_size.
+    """
+    def __init__(self):
+        super().__init__(sync_on_compute=False)
+        self.add_state('value', default=torch.tensor(0.0), dist_reduce_fx='mean')
+
+    def update(self, value: float):
+        self.value = torch.tensor(value, device=self.device)
+
+    def compute(self):
+        return self.value
+
+
+# note: should refactor to match other metrics
+class DiseaseMetrics(LanguageModelMetrics):
+    """Token-level LM metrics + generation-based disease/PII/confidence logs.
+
+    The token-level metrics (MulticlassAccuracy, Perplexity) are updated during
+    the normal forward pass via update(preds, target). The CustomAccuracyLog
+    entries are updated by key from DiseaseTaskAdapter.eval_acc after generation,
+    so we must NOT feed them the token logits here (they expect a scalar).
+    """
+    _LM_KEYS = ('MulticlassAccuracy', 'Perplexity')
+
+    def __init__(self,
+                 vocab_size: int,
+                 ignore_index: int,
+                 sync: bool,
+                 custom_metrics: Optional[Dict[str, torchmetrics.Metric]] = None,
+                 ) -> None:
+        super().__init__(vocab_size=vocab_size, ignore_index=ignore_index, sync=sync)
+        self.add_metrics({
+            # Fraction of generated answers that contain the correct disease name (utility).
+            'MulticlassAccuracyDisease': CustomAccuracyLog(),
+            # Per-field substring match rates.
+            # disease / symptoms / treatment measure utility;
+            # name / country / occupation / hobby measure PII leakage (should be low with DP).
+            'AccuracyName': CustomAccuracyLog(),
+            'AccuracyCountry': CustomAccuracyLog(),
+            'AccuracyOccupation': CustomAccuracyLog(),
+            'AccuracyHobby': CustomAccuracyLog(),
+            'AccuracySymptoms': CustomAccuracyLog(),
+            'AccuracyTreatment': CustomAccuracyLog(),
+            # Confidence metrics derived from generation log-probabilities.
+            # ConfidenceWeightedAccuracyDisease weights each prediction by the
+            # model's probability of generating the disease tokens; the
+            # MeanLogProb* pair exposes calibration (correct should score higher).
+            'ConfidenceWeightedAccuracyDisease': CustomAccuracyLog(),
+            'MeanLogProbCorrect': CustomAccuracyLog(),
+            'MeanLogProbIncorrect': CustomAccuracyLog(),
+        })
+
+        #if custom_metrics:
+        #    metrics.update(custom_metrics)
+
+    def update(self, preds, target) -> None:
+        # Only the token-level LM metrics are driven by the forward pass; the
+        # CustomAccuracyLog entries are updated by key elsewhere.
+        if not hasattr(preds, 'ndim'):
+            return
+
+        if preds.ndim == 3:
+            shift_logits = preds[:, :-1, :].contiguous()
+            shift_labels = target[:, 1:].contiguous()
+            shift_logits_flat = shift_logits.view(-1, shift_logits.size(-1))
+            shift_labels_flat = shift_labels.view(-1)
+
+            self['Perplexity'].update(shift_logits, shift_labels)
+            self['MulticlassAccuracy'].update(shift_logits_flat, shift_labels_flat)
+            return
+        else:
+            log.warning('Wrong dims in metrics!')
+
+        self['Perplexity'].update(preds, target)
+        self['MulticlassAccuracy'].update(preds, target)
+
 
 class CustomMetricsFactory:
     @staticmethod
@@ -219,7 +303,6 @@ class CustomMetricsFactory:
         }
 
 
-
 class MetricsFactory:
 
     @staticmethod
@@ -227,6 +310,7 @@ class MetricsFactory:
         configuration,
         output_dim: Optional[int] = None,
     ) -> Dict[str, torchmetrics.MetricCollection]:
+
         task = configuration.task
         metric_config = getattr(configuration, 'metric_config', None)
         metric_config = CustomMetricsFactory.read_metric_config(metric_config) if metric_config else None
@@ -297,6 +381,53 @@ class MetricsFactory:
                 sync=eval_sync,
                 custom_metrics=_build_custom_metrics(metric_config, 'test_metrics', language_defaults, eval_sync),
             )
+
+        elif task == 'DiseaseTask':
+            if torch.distributed.get_rank() == 0:
+                log.info(f'Task is "{configuration.task}", initializing disease metrics.')
+
+            vocab_size = int(output_dim)
+            ignore_index = -100
+
+            language_defaults = {
+                'num_classes': vocab_size,
+                'ignore_index': ignore_index,
+                'task': 'multiclass',
+            }
+
+            train = DiseaseMetrics(
+                vocab_size=vocab_size,
+                ignore_index=ignore_index,
+                sync=train_sync,
+                custom_metrics=_build_custom_metrics(metric_config, 'train_metrics', language_defaults, train_sync),
+            )
+            valid = DiseaseMetrics(
+                vocab_size=vocab_size,
+                ignore_index=ignore_index,
+                sync=eval_sync,
+                custom_metrics=_build_custom_metrics(metric_config, 'train_metrics', language_defaults, train_sync),
+            )
+            test = DiseaseMetrics(
+                vocab_size=vocab_size,
+                ignore_index=ignore_index,
+                sync=eval_sync,
+                custom_metrics=_build_custom_metrics(metric_config, 'train_metrics', language_defaults, train_sync),
+            )
+            #train = _metrics_diseases(
+            #    vocab_size=vocab_size,
+            #    ignore_index=ignore_index,
+            #    sync=train_sync,
+            #)
+            # valid = _metrics_diseases(
+            #     vocab_size=vocab_size,
+            #     ignore_index=ignore_index,
+            #     sync=eval_sync,
+            # )
+            # test = _metrics_diseases(
+            #     vocab_size=vocab_size,
+            #     ignore_index=ignore_index,
+            #     sync=eval_sync,
+            # )
 
         else:
             raise ValueError(f'No metrics defined for task: {task}')

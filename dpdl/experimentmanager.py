@@ -209,6 +209,100 @@ def log_test_metrics(config_manager, metrics, loss):
 def log_train_metrics(config_manager, metrics, loss):
     _log_metrics(config_manager, metrics, loss, 'train')
 
+
+def log_per_disease_accuracy(config_manager, per_disease):
+    """Persist the per-disease accuracy breakdown produced by the disease task adapter.
+
+    `per_disease` is the dict returned by `compute_accuracy_per_disease`:
+    {disease_name: {'correct': int, 'true_count': int, 'accuracy': float}}.
+    Written as a CSV (one row per disease) in the experiment log directory so the
+    aggregator can consolidate it across runs.
+    """
+    if not per_disease:
+        return
+
+    log_dir = config_manager.configuration.log_dir
+    experiment_name = config_manager.configuration.experiment_name
+    full_log_dir = pathlib.Path(f'{log_dir}/{experiment_name}')
+
+    rows = [
+        {
+            'disease':    disease,
+            'true_count': stats.get('true_count'),
+            'correct':    stats.get('correct'),
+            'accuracy':   stats.get('accuracy'),
+        }
+        for disease, stats in per_disease.items()
+    ]
+    df = pd.DataFrame(rows).sort_values('true_count', ascending=False)
+
+    path = full_log_dir / 'per_disease_accuracy.csv'
+    with safe_open(str(path), 'w') as fh:
+        df.to_csv(fh, index=False)
+
+
+def log_disease_confusion_matrix(config_manager, confusion):
+    """Persist the disease confusion matrix produced by the disease task adapter.
+
+    `confusion` is a sparse dict-of-dicts:
+        {truth_disease: {predicted_disease_or_NO_PREDICTION: count}}
+    Written as a dense CSV with truth as the index and one column per
+    predicted disease (plus a trailing `__no_prediction__` column).
+    """
+    if not confusion:
+        return
+
+    log_dir = config_manager.configuration.log_dir
+    experiment_name = config_manager.configuration.experiment_name
+    full_log_dir = pathlib.Path(f'{log_dir}/{experiment_name}')
+
+    # Densify into a DataFrame indexed by truth, columns = all observed predictions.
+    df = pd.DataFrame.from_dict(confusion, orient='index').fillna(0).astype(int)
+    df.index.name = 'truth'
+    # Stable column ordering: alphabetical, with __no_prediction__ pushed last.
+    cols = sorted(c for c in df.columns if c != '__no_prediction__')
+    if '__no_prediction__' in df.columns:
+        cols.append('__no_prediction__')
+    df = df.reindex(columns=cols, fill_value=0)
+    df = df.sort_index()
+
+    path = full_log_dir / 'disease_confusion_matrix.csv'
+    with safe_open(str(path), 'w') as fh:
+        df.to_csv(fh)
+
+
+def save_per_sample_eval(
+    config_manager,
+    records,
+    *,
+    split: str,
+    filename: str | None = None,
+) -> None:
+    """Write per-sample evaluation records from the disease task adapter as CSV.
+
+    Each record carries the truth label, the model's prediction, its
+    teacher-forced log-prob over the answer tokens, the raw generated text,
+    the prompt, and per-PII-field truth values + match flags. This is what
+    drives the memorization-study analyses offline (canary scoring s(c),
+    reconstruction lift, PII recall).
+    """
+    if not records:
+        return
+
+    log_dir = config_manager.configuration.log_dir
+    experiment_name = config_manager.configuration.experiment_name
+    full_log_dir = pathlib.Path(f'{log_dir}/{experiment_name}')
+    full_log_dir.mkdir(parents=True, exist_ok=True)
+
+    normed = [tensor_to_python_type(r) for r in records]
+    df = pd.DataFrame.from_records(normed)
+
+    name = filename or f'per_sample_eval_{split}.csv'
+    out_path = full_log_dir / name
+    with safe_open(out_path, 'w') as fh:
+        fh.write(df.to_csv(index=False))
+
+
 def save_predictions(config_manager, *, labels, preds, probs, split: str) -> None:
     log_dir = config_manager.configuration.log_dir
     experiment_name = config_manager.configuration.experiment_name

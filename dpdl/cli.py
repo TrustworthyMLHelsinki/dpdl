@@ -8,16 +8,20 @@ import typer
 from pydantic import ValidationError
 from typing_extensions import Annotated
 from pathlib import Path
+import wandb
 
 from .configurationmanager import ConfigurationManager
 from .experimentmanager import (
+    log_disease_confusion_matrix,
     log_dataset_sizes,
     log_final_epsilon,
+    log_per_disease_accuracy,
     log_noise_multiplier,
     log_parameter_counts,
     log_runtime,
     log_test_metrics,
     log_train_metrics,
+    save_per_sample_eval,
     start_experiment_logging,
 )
 from .hyperparameteroptimizer import HyperparameterOptimizer
@@ -652,6 +656,27 @@ def cli(
                 rich_help_panel='Prediction options',
             )
         ] = 'test',
+        wandb_logging: Annotated[
+            bool,
+            typer.Option(
+                help='Use wandb logging',
+                rich_help_panel='Logging options',
+            )
+        ] = False,
+        wandb_username: Annotated[
+            Optional[str],
+            typer.Option(
+                help='Wandb username',
+                rich_help_panel='Logging options',
+            )
+        ] = None,
+        wandb_project: Annotated[
+            Optional[str],
+            typer.Option(
+                help='Wandb project name',
+                rich_help_panel='Logging options',
+            )
+        ] = None,
     ):
 
     # Map from commands to functions
@@ -707,10 +732,19 @@ def run_show_layers(config_manager: ConfigurationManager) -> None:
 def run_train(config_manager: ConfigurationManager) -> Optional[Path]:
     rank_zero = torch.distributed.get_rank() == 0
 
+    wandb_run = None
     if rank_zero:
         log.info('Starting training.')
         log.info(config_manager.hyperparams)
         log.info(config_manager.configuration)
+        #"""
+        if config_manager.wandb_params:
+            wandb_run = wandb.init(
+                entity=config_manager.wandb_params['wandb_username'],
+                project=config_manager.wandb_params['wandb_project'],
+                config=config_manager._cli_params,
+            )
+        #"""
 
     seed_everything(config_manager.configuration.seed)
 
@@ -735,11 +769,28 @@ def run_train(config_manager: ConfigurationManager) -> Optional[Path]:
         if rank_zero:
             log_train_metrics(config_manager, train_metrics, train_loss)
 
+    # log test accuracy and run time, and save model if asked.
+    # Tasks whose test evaluation issues collectives (e.g. DiseaseTask's disease
+    # accuracy all_reduce) must run test() on ALL ranks; others stay rank-0-only.
+    eval_all_ranks = getattr(trainer, 'eval_all_ranks', False)
+
+    test_loss, test_metrics = None, None
+    if (eval_all_ranks or rank_zero) and not config_manager.configuration.skip_test:
+        if rank_zero:
+            log.info('Evaluating on test set..')
+        test_loss, test_metrics = trainer.test()
+    torch.distributed.barrier()
+
     # Keep the test split closed during hyperparameter selection when requested.
     if rank_zero:
+
+        log_per_disease_accuracy(config_manager, getattr(trainer, 'last_per_disease_accuracy', None))
+        log_disease_confusion_matrix(config_manager, getattr(trainer, 'last_disease_confusion', None))
+        per_sample_records = getattr(trainer, 'last_per_sample_eval', None)
+        if per_sample_records:
+            save_per_sample_eval(config_manager, per_sample_records, split='test')
+
         if not config_manager.configuration.skip_test:
-            log.info('Evaluating on test set..')
-            test_loss, test_metrics = trainer.test()
 
             log_test_metrics(config_manager, test_metrics, test_loss)
         log_runtime(config_manager, start_time, end_time)
@@ -772,6 +823,9 @@ def run_train(config_manager: ConfigurationManager) -> Optional[Path]:
             saved_model_path = save_path
 
         torch.distributed.barrier()
+
+    if rank_zero and wandb_run:
+        wandb_run.finish()
 
     return saved_model_path
 

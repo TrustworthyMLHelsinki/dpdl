@@ -13,6 +13,7 @@ from .configurationmanager import ConfigurationManager
 from .datamodules import DataModule, DataModuleFactory
 from .experimentmanager import (
     save_gradient_diagnostics,
+    save_per_sample_eval,
     save_predict_metrics,
     save_predictions,
 )
@@ -94,43 +95,79 @@ class Predictor:
                 # Move inputs to device
                 X, y = self.trainer.adapter.move_to_device(X, y)
 
+                # LM tasks (HF Mapping inputs) produce logits [B, T, V] where V is
+                # the vocab size — accumulating probs.cpu() across batches blows up
+                # CPU RAM. The "prediction" CSV is also meaningless for LM: argmax
+                # over the time dim doesn't correspond to anything; the real
+                # evaluation is done by adapter.eval_acc (generation) below.
+                is_lm = isinstance(X, Mapping)
+
                 logits = model(X)
-                probs = torch.nn.functional.softmax(logits, dim=1)
-                preds = torch.argmax(probs, dim=1)
 
-                self.trainer._unwrap_model().train_metrics.update(preds, y)
+                if not is_lm:
+                    probs = torch.nn.functional.softmax(logits, dim=1)
+                    preds = torch.argmax(probs, dim=1)
 
-                local_preds.append(preds.cpu())
-                local_probs.append(probs.cpu())
-                local_labels.append(y.cpu())
+                    self.trainer._unwrap_model().train_metrics.update(preds, y)
+
+                    local_preds.append(preds.cpu())
+                    local_probs.append(probs.cpu())
+                    local_labels.append(y.cpu())
 
                 if self.save_gradient_data:
                     norms = self._per_sample_grad_norms(X, y)
 
-                    for lbl, pred, norm in zip(y.tolist(), preds.tolist(), norms.tolist()):
+                    # For LM, the per-row "pred" isn't well-defined from
+                    # teacher-forced logits, so leave it as None.
+                    preds_iter = (preds.tolist() if not is_lm else [None] * len(norms))
+                    for lbl, pred, norm in zip(y.tolist(), preds_iter, norms.tolist()):
                         record = {'label': lbl, 'pred': pred, 'norm': norm}
                         grad_records.append(record)
 
+                del logits
+
+        # Adapter-specific evaluation pass. Base TaskAdapter.eval_acc is a no-op
+        # (classification tasks already got per-batch updates above). The
+        # DiseaseTaskAdapter generates answers and populates the disease/PII/
+        # confidence metrics, and sets trainer.last_* as side effects.
+        self.trainer.adapter.eval_acc(self.trainer, self.trainer._unwrap_model().train_metrics)
+
         metrics = self.trainer._unwrap_model().train_metrics.compute()
 
-        gathered_preds = _all_gather_object_list(local_preds)
-        gathered_probs = _all_gather_object_list(local_probs)
-        gathered_labels = _all_gather_object_list(local_labels)
+        # local_preds/probs/labels are only populated for classification tasks.
+        has_predictions = bool(local_preds)
+
+        if has_predictions:
+            gathered_preds = _all_gather_object_list(local_preds)
+            gathered_probs = _all_gather_object_list(local_probs)
+            gathered_labels = _all_gather_object_list(local_labels)
 
         if torch.distributed.get_rank() == 0:
-            all_preds = torch.cat([t.cpu() for t in gathered_preds])
-            all_probs = torch.cat([t.cpu() for t in gathered_probs])
-            all_labels = torch.cat([t.cpu() for t in gathered_labels])
+            if has_predictions:
+                all_preds = torch.cat([t.cpu() for t in gathered_preds])
+                all_probs = torch.cat([t.cpu() for t in gathered_probs])
+                all_labels = torch.cat([t.cpu() for t in gathered_labels])
 
-            save_predictions(
-                self.config_manager,
-                labels=all_labels,
-                preds=all_preds,
-                probs=all_probs,
-                split=self.dataset_split,
-            )
+                save_predictions(
+                    self.config_manager,
+                    labels=all_labels,
+                    preds=all_preds,
+                    probs=all_probs,
+                    split=self.dataset_split,
+                )
 
             save_predict_metrics(self.config_manager, metrics)
+
+            # Per-sample eval records (log-probs + generated text + prompt) — set
+            # as a side effect of adapter.eval_acc on rank 0. No-op adapters leave
+            # this unset, so we read defensively.
+            per_sample_records = getattr(self.trainer, 'last_per_sample_eval', None)
+            if per_sample_records:
+                save_per_sample_eval(
+                    self.config_manager,
+                    per_sample_records,
+                    split=self.dataset_split,
+                )
 
         torch.distributed.barrier()
 
@@ -196,6 +233,23 @@ class Predictor:
                 x_batch = x_single.unsqueeze(0)
 
             logits = functional_call(model, (p, buffers), (x_batch,))
+
+            if isinstance(x_batch, Mapping) and 'labels' in x_batch:
+                # HF causal-LM input. Mirror the LM training loss: the targets
+                # live in x['labels'] (token-id sequence with -100 masking on
+                # prompt tokens), not in yi_single (the task-level label, e.g.
+                # disease class ID). Shift logits/labels by 1, flatten, CE.
+                lm_labels = x_batch['labels']  # [1, T]
+                shift_logits = logits[:, :-1, :].contiguous()  # [1, T-1, V]
+                shift_labels = lm_labels[:, 1:].contiguous()  # [1, T-1]
+                return F.cross_entropy(
+                    shift_logits.view(-1, shift_logits.size(-1)),
+                    shift_labels.view(-1),
+                    reduction='sum',
+                    ignore_index=-100,
+                )
+
+            # Classification: logits [1, C], target [1] scalar class
             return F.cross_entropy(logits, yi_single.unsqueeze(0), reduction='sum')
 
         gfun = grad(loss_one, argnums=0)
