@@ -29,6 +29,11 @@ dependencies = [
   "PyYAML",
   "Pillow",
   "opacus>=1.6.0",
+  "pandas-stubs~=2.3.3",
+  "ipykernel>=7.3.0",
+  "matplotlib>=3.10.9",
+  "wandb>=0.28.2",
+  "weave>=0.53.6",
 ]
 
 [project.scripts]
