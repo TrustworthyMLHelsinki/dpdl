@@ -827,6 +827,9 @@ def run_train(config_manager: ConfigurationManager) -> Optional[Path]:
     if rank_zero and wandb_run:
         wandb_run.finish()
 
+    if config_manager.wandb_params:
+        wandb.teardown()
+
     return saved_model_path
 
 
