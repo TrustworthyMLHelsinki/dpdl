@@ -3,6 +3,7 @@ import math
 
 import torch
 import torchmetrics
+import wandb
 
 from ..utils import tensor_to_python_type
 from .base_callback import Callback
@@ -61,19 +62,25 @@ class RecordEpochStatsCallback(Callback):
                 log.info(f"Epoch {epoch+1} finished. Loss: {loss:.4f}.")
             else:
                 log.info(f"Approximate epoch {epoch+1} finished. Loss: {loss:.4f}.")
-
+            if trainer.wandb_logging and metrics:
+                wandb.log({**{'Epoch': epoch, 'Training/Loss': loss}, **{(trainer.wandb_metrics_names['train'][k] if k in trainer.wandb_metrics_names['train'] else k): v for k, v in metrics.items()}} )
+                # NOTE: not sure if disease metrics are currently updated properly at this point; need to check
             self._log_metrics(metrics, "Train metrics")
 
     def on_train_batch_end(self, trainer, batch_idx, batch, loss):
         self.train_loss.update(loss)
 
-    def on_validation_epoch_end(self, trainer, epoch, metrics, loss):
+    def on_validation_epoch_end(self, trainer, epoch, metrics):
+        loss = self.evaluation_loss.compute()
+        self.evaluation_loss.reset()
         if self._is_global_zero():
+            log.warning('wandb logging not implemented at validation!')
             log.info(f"Validation finished. Loss: {loss:.4f}.")
             self._log_metrics(metrics, "Validation metrics")
 
     def on_test_epoch_end(self, trainer, epoch, metrics, loss):
         if self._is_global_zero():
+            log.warning('wandb logging not implemented at test!')
             log.info(f"Test finished. Loss: {loss:.4f}.")
             self._log_metrics(metrics, "Test metrics")
 
