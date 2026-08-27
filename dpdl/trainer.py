@@ -14,6 +14,7 @@ from opacus.distributed import DifferentiallyPrivateDistributedDataParallel
 from opacus.utils.batch_memory_manager import BatchMemoryManager
 
 from peft import PeftModel
+import wandb
 
 from .callbacks.callback_factory import CallbackFactory, CallbackHandler
 from .configurationmanager import Configuration, ConfigurationManager, Hyperparameters
@@ -56,6 +57,8 @@ class Trainer:
         peft: str | None = None,
         task: str | None = None,
         device: torch.device | None = None,
+        wandb_logging: bool = False,
+        wandb_metrics_names: dict | None = None,
     ):
 
         self.model = model
@@ -71,6 +74,8 @@ class Trainer:
         self.device = device or torch.device('cuda')
         self.adapter = adapter
         self.adapter.device = self.device
+        self.wandb_logging = wandb_logging
+        self.wandb_metrics_names = wandb_metrics_names
 
         # Resume support: epoch to start the training loop from (0 = fresh run).
         # Set by load_training_state() when resuming from a checkpoint.
@@ -1601,6 +1606,10 @@ class TrainerFactory:
             peft=configuration.peft,
             task=configuration.task,
             device=device,
+            wandb_logging=configuration.wandb_logging,
+            wandb_metrics_names={'train': metrics['train_metrics'].wandb_metrics_names,
+                                 'valid': metrics['valid_metrics'].wandb_metrics_names,
+                                 'test': metrics['test_metrics'].wandb_metrics_names},
         )
 
         return trainer
@@ -1708,6 +1717,10 @@ class TrainerFactory:
             peft=configuration.peft,
             task=configuration.task,
             device=device,
+            wandb_logging=configuration.wandb_logging,
+            wandb_metrics_names={'train' : metrics['train_metrics'].wandb_metrics_names,
+                                 'valid' : metrics['valid_metrics'].wandb_metrics_names,
+                                 'test': metrics['test_metrics'].wandb_metrics_names},
         )
 
         return trainer
