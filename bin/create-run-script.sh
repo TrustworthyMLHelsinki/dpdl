@@ -1,13 +1,17 @@
 #!/bin/bash
 
 show_help() {
-    echo "Usage: $0 script_name [options...]"
+    echo "Usage: $0 script_name env_path [options...]"
     echo ""
     echo "script_name               Name of the script to be created."
+    echo "env_path                  Path to the environment (see env_type below)."
     echo ""
     echo "Options:"
     echo "  --help                  Show this help message."
-    echo "  project                 Slurm project (default: project_462000213)."
+    echo "  env_type                Environment type: 'singularity' or 'venv' (default: venv)."
+    echo "                          env_path is the .sqsh image for singularity, or the venv"
+    echo "                          directory (containing bin/activate) for venv."
+    echo "  project                 Slurm project (default: project_xxxxxxxxx)."
     echo "  partition               Slurm partition (default: standard-g)."
     echo "  gpus                    Number of GPUs (default: 8)."
     echo "  time                    Time allocation (default: 1:00:00, 00:15:00 for dev-g)."
@@ -15,7 +19,7 @@ show_help() {
     echo "  cpus_per_task           Number of CPUs per task (default: 7)."
     echo ""
     echo "Example:"
-    echo "  $0 run.sh project_462000213 small-g 1"
+    echo "  $0 run.sh /scratch/project_xxxxxxxxx/venvs/dpdl venv project_xxxxxxxxx small-g 1"
 }
 
 # Check for --help option
@@ -24,24 +28,38 @@ if [[ "$1" == "--help" ]]; then
     exit 0
 fi
 
-# First argument is the script name, defaults to "run8.sh" if not provided
+# First argument is the script name
 script_name=$1
 if [[ "$script_name" == "" ]]; then
     show_help
     exit 0
 fi
 
+# Second argument is the environment path, required just like script_name
+env_path=$2
+if [[ "$env_path" == "" ]]; then
+    echo "Error: env_path is required." >&2
+    show_help
+    exit 1
+fi
+
+env_type=${3:-"venv"}
+if [[ "$env_type" != "singularity" && "$env_type" != "venv" ]]; then
+    echo "Error: env_type must be either 'singularity' or 'venv'." >&2
+    show_help
+    exit 1
+fi
+
 # Wrapper script sets the environment variables after "srun" has been called
 wrapper_script="run_wrapper.sh"
 
-project=${2:-"project_462000213"}
-partition=${3:-"standard-g"}
-gpus=${4:-8}
+project=${4:-"project_xxxxxxxxx"}
+partition=${5:-"standard-g"}
+gpus=${6:-8}
 ntasks_per_node=$gpus
-time=${5:-"1:00:00"}
-mem_per_gpu=${6:-"60G"}
-cpus_per_task=${7:-7}
-exclusive="--exclusive"
+time=${7:-"1:00:00"}
+mem_per_gpu=${8:-"60G"}
+cpus_per_task=${9:-7}
 cpu_bind_mask="0xfe000000000000,0xfe00000000000000,0xfe0000,0xfe000000,0xfe,0xfe00,0xfe00000000,0xfe0000000000"
 nodes=1
 
@@ -57,9 +75,20 @@ if [ "$partition" == "dev-g" ]; then
     time="00:15:00"
 fi
 
+# Only the final line differs between the two environment types
+if [[ "$env_type" == "singularity" ]]; then
+    run_cmd='singularity exec "instance://$SINGULARITY_INSTANCE_NAME" python3 -u "$@"'
+else
+    run_cmd='python3 -u "$@"'
+fi
+
 # Create the wrapper script dynamically
 cat <<EOF > $wrapper_script
 #!/bin/bash
+
+MIOPEN_DIR=\$(mktemp -d)
+export MIOPEN_CUSTOM_CACHE_DIR=\$MIOPEN_DIR/cache
+export MIOPEN_USER_DB=\$MIOPEN_DIR/config
 
 # Distributed settings
 export MASTER_PORT=\$(expr 30000 + \$(echo -n \$SLURM_JOBID | tail -c 4))
@@ -68,9 +97,17 @@ export WORLD_SIZE=\$SLURM_NPROCS
 export LOCAL_RANK=\$SLURM_LOCALID
 export RANK=\$SLURM_PROCID
 export ROCR_VISIBLE_DEVICES=\$SLURM_LOCALID
+export CUDA_VISIBLE_DEVICES=\$SLURM_LOCALID
+export HSA_VISIBLE_DEVICES=\$SLURM_LOCALID
+
+# Same-node job: keep bootstrap on loopback
+export GLOO_SOCKET_IFNAME=lo
+export NCCL_SOCKET_IFNAME=lo
+
+getent hosts "\$MASTER_ADDR" || echo "getent could not resolve \$MASTER_ADDR"
 
 # Finally, run the program
-python3 "\$@"
+$run_cmd
 EOF
 
 chmod +x $wrapper_script
@@ -90,11 +127,6 @@ cat <<EOF > $script_name
 #SBATCH --error=slurm-%x.%j.out
 #SBATCH --output=slurm-%x.%j.stdout
 
-# Load CSC PyTorch
-module use /appl/local/csc/modulefiles/
-module load pytorch
-module list
-
 # Fix for illegal memory access with convolutional networks
 export MIOPEN_DEBUG_CONV_CK_IGEMM_FWD_V6R1_DLOPS_NCHW=0
 
@@ -106,9 +138,26 @@ export HUGGINGFACE_HUB_CACHE="\$DATA_DIR/huggingface_hub"
 export TORCH_HOME="\$DATA_DIR/torch"
 export _TYPER_STANDARD_TRACEBACK=1
 
-# Activate virtual environment
-source /scratch/\$PROJECT/venvs/dpdl/bin/activate
+EOF
 
+if [[ "$env_type" == "venv" ]]; then
+cat <<EOF >> $script_name
+# Activate virtual environment
+source "$env_path/bin/activate"
+
+EOF
+else
+cat <<EOF >> $script_name
+# Start one container instance for the whole job, shared by all ranks
+export SINGULARITYENV_PREPEND_PATH=/user-software/bin
+export SINGULARITY_INSTANCE_NAME="dpdl_\${SLURM_JOB_ID}"
+singularity instance start -B "$env_path":/user-software:image-src=/ "\$SIF" "\$SINGULARITY_INSTANCE_NAME"
+trap 'singularity instance stop "\$SINGULARITY_INSTANCE_NAME"' EXIT
+
+EOF
+fi
+
+cat <<EOF >> $script_name
 # Run the wrapper script with srun
 set -xv
 srun $srun_args ./$wrapper_script \$@
@@ -118,4 +167,3 @@ EOF
 chmod +x $script_name
 
 echo "Created scripts: $script_name and $wrapper_script."
-
