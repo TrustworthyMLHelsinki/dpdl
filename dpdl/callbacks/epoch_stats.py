@@ -78,13 +78,15 @@ class RecordEpochStatsCallback(Callback):
         # NOTE: losses now passed in call, check and fix all!
         # ALSO: removed on batch end callbacks?
         if self._is_global_zero():
-            log.warning('wandb logging not implemented at validation!')
+            if trainer.wandb_logging and metrics:
+                wandb.log({**{'Epoch': epoch, 'Validation/Loss': loss}, **{(trainer.wandb_metrics_names['valid'][k] if k in trainer.wandb_metrics_names['valid'] else k): v for k, v in metrics.items()}} )
             log.info(f"Validation finished. Loss: {loss:.4f}.")
             self._log_metrics(metrics, "Validation metrics")
 
     def on_test_epoch_end(self, trainer, epoch, metrics, loss):
         if self._is_global_zero():
-            log.warning('wandb logging not implemented at test!')
+            if trainer.wandb_logging and metrics:
+                wandb.log({**{'Epoch': epoch, 'Test/Loss': loss}, **{(trainer.wandb_metrics_names['test'][k] if k in trainer.wandb_metrics_names['test'] else k): v for k, v in metrics.items()}} )
             log.info(f"Test finished. Loss: {loss:.4f}.")
             self._log_metrics(metrics, "Test metrics")
 
