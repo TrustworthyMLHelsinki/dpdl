@@ -103,7 +103,7 @@ class Trainer:
 
         self.setup()
 
-        # note: do we need to shard this, could only run on rank 0? seems like motivation is to avoid inflating counts,
+        # NOTE: do we need to shard this, could only run on rank 0? seems like motivation is to avoid inflating counts,
         # but this shouldn't happen if check rank before evals
         # Shard the generation eval loader across ranks so its all_reduce counts
         # are not inflated by the world size (no-op for single-GPU / non-disease).
@@ -332,9 +332,7 @@ class Trainer:
         torch.set_grad_enabled(True)
         self.model.train()
 
-        # NOTE: main now passes eval loss from trainer here (and probably elsewhere in callbacks)
         # Callbacks run on rank 0 only, so they cannot reduce a loss themselves
-        # NOTE: don't check for rank 0 due to disease(?)
         # Hand them the already-reduced one
         if enable_callbacks:
             self.callback_handler.call(f'on_{mode}_epoch_end', self, epoch, metrics, evaluation_loss)
@@ -366,7 +364,6 @@ class Trainer:
         if enable_callbacks:
             self.callback_handler.call(f'on_{mode}_batch_end', self, batch_idx, batch, loss.item())
 
-        # NOTE: also return weight
         return loss.item(), weight
 
     def _unwrap_model(self):
@@ -1007,6 +1004,7 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
 
                     # output_scores=True gives us per-step logits so we can compute
                     # the model's confidence in the disease tokens it generated.
+                    # NOTE: should have configs in cli options with other params!
                     generate_output = trainer._unwrap_model().generate(
                         X_splitted,
                         max_new_tokens=60,
@@ -1436,6 +1434,7 @@ def _disease_log_prob(scores, generated_ids, disease_text, tokenizer, input_len,
         return None
     return total_lp / n_tokens
 
+# NOTE: where should this go?
 NO_PREDICTION_KEY = '__no_prediction__'
 
 def extract_predicted_disease(text, disease_texts):

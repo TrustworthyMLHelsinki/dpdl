@@ -68,7 +68,6 @@ class RecordEpochStatsCallback(Callback):
                 log.info(f"Approximate epoch {epoch+1} finished. Loss: {loss:.4f}.")
             if trainer.wandb_logging and metrics:
                 wandb.log({**{'Epoch': epoch, 'Training/Loss': loss}, **{(trainer.wandb_metrics_names['train'][k] if k in trainer.wandb_metrics_names['train'] else k): v for k, v in metrics.items()}} )
-                # NOTE: not sure if disease metrics are currently updated properly at this point; need to check
             self._log_metrics(metrics, "Train metrics")
 
     def on_train_batch_end(self, trainer, batch_idx, batch, loss):

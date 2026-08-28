@@ -412,7 +412,14 @@ class MetricsFactory:
                 'task': 'multiclass',
             }
 
-            train = DiseaseMetrics(
+            #train = DiseaseMetrics(
+            #    vocab_size=vocab_size,
+            #    ignore_index=ignore_index,
+            #    sync=train_sync,
+            #    custom_metrics=_build_custom_metrics(metric_config, 'train_metrics', language_defaults, train_sync),
+            #)
+            # don't include disease metrics in train as they're only updated in valid/test
+            train = LanguageModelMetrics(
                 vocab_size=vocab_size,
                 ignore_index=ignore_index,
                 sync=train_sync,
