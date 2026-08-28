@@ -32,7 +32,7 @@ from .metrics_factory import MetricsFactory
 from .models.model_base import ModelBase
 from .models.model_factory import ModelFactory
 from .optimizers import OptimizerFactory
-from .utils import seed_everything, shift_and_flatten
+from .utils import is_global_zero, seed_everything, shift_and_flatten
 
 log = logging.getLogger(__name__)
 
@@ -157,9 +157,11 @@ class Trainer:
             if self.validation_frequency and epoch % self.validation_frequency == 0:
                 self._run_validation(epoch)
                 #if torch.distributed.get_rank() == 0:
-                # self.validate(epoch)
+                # NOTE: check the change for this! disease uses the above uncommented  one?
+                #self.validate(epoch)
 
                 # other ranks will wait for validation
+                # NOTE: is there barrier somewhere in main valid?
                 torch.distributed.barrier()
 
     def _fit_total_steps(self):
@@ -186,6 +188,8 @@ class Trainer:
                     virtual_epoch += 1
 
                     if self.validation_frequency and virtual_epoch % self.validation_frequency == 0:
+                        # NOTE: check if main does ranks & barriers now somewhere else!
+                        # also self.validate (main) vs self._run_validation (disease)
                         self._run_validation(virtual_epoch)
                         #if torch.distributed.get_rank() == 0:
                         #    self.validate(virtual_epoch)
@@ -288,7 +292,8 @@ class Trainer:
         return count_parameters(self._unwrap_model())
 
     def _evaluate(self, mode, epoch=None, enable_callbacks=True):
-        if enable_callbacks:
+        if enable_callbacks and is_global_zero():
+            # NOTE: this is main, shouldn't be zero for disease?
             self.callback_handler.call(f'on_{mode}_epoch_start', self, epoch)
 
         self.model.eval()
@@ -314,11 +319,23 @@ class Trainer:
 
         metrics_evaluator.reset()
 
-        for batch_idx, batch in enumerate(dataloader):
-            loss = self._evaluate_one_batch(mode, batch_idx, batch, enable_callbacks, metrics_evaluator)
-            evaluation_loss += loss
+        # Weight each batch by the number of terms its mean loss averages over
+        # (examples for classification, non-ignored tokens for LM),
+        # so the reduction is a per-item mean rather than a mean of per-batch means
+        loss_sum = 0.0
+        sample_count = 0
 
-        evaluation_loss /= len(dataloader)
+        for batch_idx, batch in enumerate(dataloader):
+            loss, weight = self._evaluate_one_batch(mode, batch_idx, batch, enable_callbacks, metrics_evaluator)
+            loss_sum += loss * weight
+            sample_count += weight
+
+        # all_reduce the weighted sum and the count separately, then divide once
+        # so the global loss is sum(loss*n) / sum(n) across every rank
+        totals = torch.tensor([loss_sum, float(sample_count)], device=self.device)
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.all_reduce(totals)
+        evaluation_loss = (totals[0] / totals[1]).item() if totals[1] > 0 else 0.0
 
         # Generation-based eval (e.g. DiseaseTask disease accuracy). No-op for
         # tasks without it. Runs before compute() so its metrics are included.
@@ -329,12 +346,17 @@ class Trainer:
         torch.set_grad_enabled(True)
         self.model.train()
 
+        # NOTE: main now passes eval loss from trainer here (and probably elsewhere in callbacks)
+        # Callbacks run on rank 0 only, so they cannot reduce a loss themselves
+        # NOTE: don't check for rank 0 due to disease(?)
+        # Hand them the already-reduced one
         if enable_callbacks:
-            self.callback_handler.call(f'on_{mode}_epoch_end', self, epoch, metrics)
+            self.callback_handler.call(f'on_{mode}_epoch_end', self, epoch, metrics, evaluation_loss)
 
         return evaluation_loss, metrics
 
     def _evaluate_one_batch(self, mode, batch_idx, batch, enable_callbacks, metrics_evaluator):
+        # NOTE: don't check for rank 0 due to disease(?)
         if enable_callbacks:
             self.callback_handler.call(f'on_{mode}_batch_start', self, batch_idx, batch)
 
@@ -343,6 +365,10 @@ class Trainer:
 
         forward_output = self.adapter.forward(self._unwrap_model(), (X, y))
         loss = self.adapter.compute_loss(self._unwrap_model(), (X, y), forward_output)
+
+        # Exact denominator the mean loss is divided by,
+        # so _evaluate can reduce to a true per-item mean across batches and ranks.
+        weight = self.adapter.num_loss_items(self._unwrap_model(), (X, y), forward_output)
         self.adapter.update_metrics(
             self._unwrap_model(),
             (X, y),
@@ -350,10 +376,12 @@ class Trainer:
             metrics=metrics_evaluator,  # record into the provided evaluator
         )
 
+        # NOTE: don't check for rank 0 due to disease(?)
         if enable_callbacks:
             self.callback_handler.call(f'on_{mode}_batch_end', self, batch_idx, batch, loss.item())
 
-        return loss.item()
+        # NOTE: also return weight
+        return loss.item(), weight
 
     def _unwrap_model(self):
         m = self.model
@@ -415,7 +443,8 @@ class Trainer:
                 # the model. Then it will return as ModelBase.
                 merged.save_model(fpath)
 
-                if torch.distributed.get_rank() == 0:
+                # NOTE: check consistent use of rank 0 vs is_global_zero
+                if is_global_zero():
                     log.info(f'Saved merged HF PEFT model to {fpath}')
 
             return
@@ -691,6 +720,7 @@ class DifferentiallyPrivateTrainer(Trainer):
                         #if torch.distributed.get_rank() == 0:
                         #    self.validate(virtual_epoch)
 
+                        # NOTE: barrier or not?
                         # other ranks will wait for validation
                         torch.distributed.barrier()
 
@@ -826,6 +856,9 @@ class TaskAdapter:
     def compute_loss(self, model, batch, forward_output, normalize_by: int | None = None):
         raise NotImplementedError
 
+    def num_loss_items(self, model, batch, forward_output) -> int:
+        raise NotImplementedError
+
     def update_metrics(self, model, batch, forward_output, metrics = None):
         raise NotImplementedError
 
@@ -850,6 +883,11 @@ class ClassificationAdapter(TaskAdapter):
             loss = loss / normalize_by
 
         return loss
+
+    def num_loss_items(self, model, batch, forward_output) -> int:
+        # No ignored targets in classification, so the mean divides by batch size.
+        _, y = batch
+        return y.shape[0]
 
     def update_metrics(self, model, batch, forward_output, metrics = None):
         _, y = batch
@@ -886,6 +924,13 @@ class LanguageModelAdapter(TaskAdapter):
             loss = loss / normalize_by
 
         return loss
+
+    def num_loss_items(self, model, batch, forward_output) -> int:
+        # criterion averages over non-ignored, shifted targets; mirror the shift
+        # in shift_and_flatten (drop the first column) and count what remains.
+        _, y = batch
+        ignore_index = getattr(model.criterion, 'ignore_index', -100)
+        return int((y[:, 1:] != ignore_index).sum())
 
     def update_metrics(self, model, batch, forward_output, metrics = None):
         _, y = batch
@@ -1573,7 +1618,7 @@ class TrainerFactory:
         # should we cache outputs from the feature extractor?
         if configuration.cache_features:
             # compute cache on rank 0 only
-            if torch.distributed.get_rank() == 0:
+            if is_global_zero():
                 datamodule.cache_features(model)
                 torch.distributed.barrier()
             else:
@@ -1635,7 +1680,7 @@ class TrainerFactory:
             N = len(datamodule.get_dataloader('train').dataset)
             target_delta = _calculate_target_delta(N)
 
-            if torch.distributed.get_rank() == 0:
+            if is_global_zero():
                 log.info(f'Dataset size is {N}, setting target delta to: {target_delta}.')
 
             # are we given a target epsilon?
@@ -1672,7 +1717,7 @@ class TrainerFactory:
         # Are we caching the outputs of the feature extractor
         if configuration.cache_features:
             # compute cache on rank 0 only
-            if torch.distributed.get_rank() == 0:
+            if is_global_zero():
                 datamodule.cache_features(model)
                 torch.distributed.barrier()
             else:

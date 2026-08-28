@@ -427,20 +427,6 @@ class RecordOptimizerStatsCallback(Callback):
         cls = type(value)
         return f'{cls.__module__}.{cls.__qualname__}'
 
-    @staticmethod
-    def _distributed_world_size() -> int:
-        # Unit tests and single-device runs do not initialize torch.distributed.
-        if torch.distributed.is_available() and torch.distributed.is_initialized():
-            return torch.distributed.get_world_size()
-        return 1
-
-    @staticmethod
-    def _is_global_zero() -> bool:
-        # Only rank zero owns output files, but every rank participates in reductions.
-        if torch.distributed.is_available() and torch.distributed.is_initialized():
-            return torch.distributed.get_rank() == 0
-        return True
-
     def _update_terminal_metadata(self, trainer) -> None:
         self._optimizer_metadata['completed_optimizer_steps'] = len(self._rows)
         maximum_residual = max(row['adam_identity_relative_residual'] for row in self._rows)

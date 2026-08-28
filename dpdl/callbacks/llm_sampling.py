@@ -10,7 +10,7 @@ class LLMSamplingCallback(Callback):
     """
 
     def on_train_epoch_end(self, trainer, epoch, metrics):
-        if torch.distributed.get_rank() == 0:
+        if self._is_global_zero():
             trainer._sample_impl()
 
         torch.distributed.barrier()

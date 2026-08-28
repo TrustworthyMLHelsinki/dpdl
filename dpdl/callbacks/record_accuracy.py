@@ -39,7 +39,7 @@ class RecordAccuracyByEpochCallback(Callback):
         acc = tensor_to_python_type(metrics[self.metric])
         self.train_accuracies.append(acc)
 
-    def on_validation_epoch_end(self, trainer, epoch, metrics):
+    def on_validation_epoch_end(self, trainer, epoch, metrics, loss):
         acc = tensor_to_python_type(metrics[self.metric])
         self.val_accuracies.append(acc)
 

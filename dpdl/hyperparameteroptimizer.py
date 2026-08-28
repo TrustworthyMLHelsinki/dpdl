@@ -265,22 +265,12 @@ class HyperparameterOptimizer:
         if torch.distributed.get_rank() == 0:
             log.info('Evaluating final model on the test set.')
 
+        # All ranks participate in test() because _evaluate uses collective
+        # ops (all_reduce for loss, torchmetrics sync for metrics).
+        loss, metrics = trainer.test()
+
         if torch.distributed.get_rank() == 0:
-            loss, metrics = trainer.test()
             log.info(f'Final loss: {loss:.4f}')
-
-            # let's share the loss and metrics with other ranks
-            # rank 0 is the source
-            broadcast_objects = [loss, metrics]
-        else:
-            # other ranks receive
-            broadcast_objects = [None, None]
-
-        # now, broadcast the list from rank 0 to all the other ranks
-        torch.distributed.broadcast_object_list(broadcast_objects, src=0)
-
-        # now all the ranks have access to the metrics
-        loss, metrics = broadcast_objects
 
         if torch.distributed.get_rank() == 0:
             if metrics:
@@ -377,9 +367,10 @@ class HyperparameterOptimizer:
         trainer.fit()
 
         # optimization objective is the validation loss
-        if torch.distributed.get_rank() == 0:
-            loss, metrics = trainer.validate()
+        # Again, we need all ranks to participate in loss and metrics computation
+        loss, metrics = trainer.validate()
 
+        if torch.distributed.get_rank() == 0:
             log.info('Writing the loss and metrics of current trial into file.')
             save_hpo_metrics(
                 config_manager,
@@ -387,19 +378,6 @@ class HyperparameterOptimizer:
                 metrics,
                 trial_index=trial.number,
             )
-
-            # let's share the loss and metrics with other ranks
-            # rank 0 is the source
-            broadcast_objects = [loss, metrics]
-        else:
-            # other ranks receive
-            broadcast_objects = [None, None]
-
-        # now, broadcast the list from rank 0 to all the other ranks
-        torch.distributed.broadcast_object_list(broadcast_objects, src=0)
-
-        # now all the ranks have access to the metrics
-        loss, metrics = broadcast_objects
 
         # find the correct metric value to use as optimization objective
         target_metric = config_manager.configuration.optuna_target_metric

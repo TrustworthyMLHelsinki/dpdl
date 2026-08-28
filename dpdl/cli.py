@@ -725,7 +725,7 @@ def run_show_layers(config_manager: ConfigurationManager) -> None:
         42,
         torch.nn.MSELoss()
     )
-    
+
     model.show_layers()
 
 
@@ -791,7 +791,6 @@ def run_train(config_manager: ConfigurationManager) -> Optional[Path]:
             save_per_sample_eval(config_manager, per_sample_records, split='test')
 
         if not config_manager.configuration.skip_test:
-
             log_test_metrics(config_manager, test_metrics, test_loss)
         log_runtime(config_manager, start_time, end_time)
 
