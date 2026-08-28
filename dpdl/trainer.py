@@ -146,7 +146,7 @@ class Trainer:
         For generation-eval tasks all ranks participate (collectives inside
         eval_acc); otherwise only rank 0 evaluates while the rest wait.
         """
-        if self.eval_all_ranks or torch.distributed.get_rank() == 0:
+        if self.eval_all_ranks or is_global_zero():
             self.validate(epoch)
         torch.distributed.barrier()
 
@@ -156,8 +156,6 @@ class Trainer:
 
             if self.validation_frequency and epoch % self.validation_frequency == 0:
                 self._run_validation(epoch)
-                #if torch.distributed.get_rank() == 0:
-                # self.validate(epoch)
 
     def _fit_total_steps(self):
         step = 0
@@ -191,8 +189,6 @@ class Trainer:
 
                     if self.validation_frequency and virtual_epoch % self.validation_frequency == 0:
                         self._run_validation(virtual_epoch)
-                        #if torch.distributed.get_rank() == 0:
-                        #    self.validate(virtual_epoch)
 
                     # are we finished?
                     if step >= self.total_steps:
@@ -371,8 +367,7 @@ class Trainer:
         return evaluation_loss, metrics
 
     def _evaluate_one_batch(self, mode, batch_idx, batch, enable_callbacks, metrics_evaluator):
-        # Eval batch callbacks run on rank 0 only
-        if enable_callbacks and is_global_zero():
+        if enable_callbacks:
             self.callback_handler.call(f'on_{mode}_batch_start', self, batch_idx, batch)
 
         X, y = batch
@@ -391,7 +386,9 @@ class Trainer:
             metrics=metrics_evaluator,  # record into the provided evaluator
         )
 
-        if enable_callbacks and is_global_zero():
+        # CHECK if updates disease predictions here, if not then should only do for is_global_zero?
+        # rank checked before calling this
+        if enable_callbacks:
             self.callback_handler.call(f'on_{mode}_batch_end', self, batch_idx, batch, loss.item())
 
         return loss.item(), weight
@@ -725,10 +722,6 @@ class DifferentiallyPrivateTrainer(Trainer):
                         # Rank-0-only for standard tasks; all ranks for
                         # generation-eval tasks whose validate() issues collectives.
                         self._run_validation(virtual_epoch)
-                        # validate only on rank 0. no need to do distributed here,
-                        # the computation is not heavy because we don't need gradients.
-                        #if torch.distributed.get_rank() == 0:
-                        #    self.validate(virtual_epoch)
 
                     if step < self.total_steps:
                         virtual_epoch += 1
@@ -1314,15 +1307,15 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
             and torch.distributed.is_initialized()
             and torch.distributed.get_world_size() > 1
         )
-        is_rank0 = (not is_dist) or (torch.distributed.get_rank() == 0)
-        if is_rank0:
+
+        if is_global_zero():
             log.info('Evaluating diseases accuracy with exact matching after the epoch...')
 
         acc, accuracy_per_disease, field_accuracy, confidence_stats, disease_confusion, per_sample_records = \
             self.evaluate_diseases_accuracy_exact_matching(trainer)
 
         # Only rank 0 updates the metrics evaluator to avoid double counting
-        if is_rank0:
+        if is_global_zero():
             def _safe_update(key, value):
                 if key in metrics_evaluator:
                     metrics_evaluator[key].update(value)
