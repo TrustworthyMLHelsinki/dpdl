@@ -103,7 +103,7 @@ class Trainer:
 
         self.setup()
 
-        # note: do we need to shard this, could only run on rank 0? seems like motivation is to avoid inflating counts,
+        # NOTE: do we need to shard this, could only run on rank 0? seems like motivation is to avoid inflating counts,
         # but this shouldn't happen if check rank before evals
         # Shard the generation eval loader across ranks so its all_reduce counts
         # are not inflated by the world size (no-op for single-GPU / non-disease).
@@ -1029,6 +1029,7 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
 
                     # output_scores=True gives us per-step logits so we can compute
                     # the model's confidence in the disease tokens it generated.
+                    # NOTE: should have configs in cli options with other params!
                     generate_output = trainer._unwrap_model().generate(
                         X_splitted,
                         max_new_tokens=60,
@@ -1458,6 +1459,7 @@ def _disease_log_prob(scores, generated_ids, disease_text, tokenizer, input_len,
         return None
     return total_lp / n_tokens
 
+# NOTE: where should this go?
 NO_PREDICTION_KEY = '__no_prediction__'
 
 def extract_predicted_disease(text, disease_texts):
