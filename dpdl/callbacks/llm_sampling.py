@@ -11,6 +11,8 @@ class LLMSamplingCallback(Callback):
 
     def on_train_epoch_end(self, trainer, epoch, metrics):
         if self._is_global_zero():
-            trainer._sample_impl()
+            raise NotImplementedError
+            # should fix call signature before using
+            #trainer.adapter.sample()
 
         torch.distributed.barrier()
