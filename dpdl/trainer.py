@@ -1530,7 +1530,7 @@ _ADAPTERS = {
 class TrainerFactory:
 
     @staticmethod
-    def _make_adapter(configuration, device):
+    def _make_adapter(configuration, device, datamodule):
         task = configuration.task or 'classification'
 
         if task not in _ADAPTERS:
@@ -1542,7 +1542,10 @@ class TrainerFactory:
             adapter_args['llm_temperature'] = configuration.llm_temperature
             adapter_args['llm_top_p'] = configuration.llm_top_p
             adapter_args['llm_top_k'] = configuration.llm_top_k
-        return _ADAPTERS[task](device, **adapter_args)
+        adapter = _ADAPTERS[task](device, **adapter_args)
+        # Build the disease label->token/text mapping (no-op for other tasks).
+        adapter.set_label_tokens(datamodule)
+        return adapter
 
     @staticmethod
     def get_trainer(config_manager: ConfigurationManager) -> Trainer:
@@ -1617,10 +1620,7 @@ class TrainerFactory:
 
         epochs, total_steps = TrainerFactory._get_epochs_and_steps(configuration, hyperparams, datamodule)
 
-        adapter = TrainerFactory._make_adapter(configuration, device)
-        # NOTE: can move this? would be better at DiseaseTask init
-        # Build the disease label->token/text mapping (no-op for other tasks).
-        adapter.set_label_tokens(datamodule)
+        adapter = TrainerFactory._make_adapter(configuration, device, datamodule)
 
         # instantiate a trainer without dp
         trainer = Trainer(
@@ -1717,10 +1717,7 @@ class TrainerFactory:
         target_delta, target_epsilon = _get_target_privacy_params(hyperparams)
         epochs, total_steps = TrainerFactory._get_epochs_and_steps(configuration, hyperparams, datamodule)
 
-        adapter = TrainerFactory._make_adapter(configuration, device)
-        # note: possible to move this?
-        # Build the disease label->token/text mapping (no-op for other tasks).
-        adapter.set_label_tokens(datamodule)
+        adapter = TrainerFactory._make_adapter(configuration, device, datamodule)
 
         # instantiate a differentialy private trained
         trainer = DifferentiallyPrivateTrainer(
