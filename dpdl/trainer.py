@@ -433,50 +433,6 @@ class Trainer:
 
         model.save_model(fpath)
 
-    # Note: should this be moved to DiseaseTaskAdapter?
-    def _sample_impl(self):
-        self.model.eval()
-
-        with torch.no_grad():
-            for batch_idx, batch in enumerate(self.datamodule.get_dataloader('sample')):
-                # DiseaseTask's sample loader yields (tokenized, raw_fields);
-                # other tasks yield just the tokenized inputs.
-                X = batch[0] if isinstance(batch, tuple) else batch
-                X = self.adapter.move_to_device(X)
-
-                is_mapping = isinstance(X, Mapping)  # covers dict and HF BatchEncoding
-                # gradient accumulation. split the batch to sub batches that fit in the GPU memory.
-                # then process the sub batches one at a time and call backward.
-                # when all the sub batches have been processed we can finally step the optimizer.
-                if is_mapping:
-                    # split each tensor in the dict
-                    X_split = {k: v.split(self.physical_batch_size, dim=0) for k, v in X.items()}
-                else:
-                    X_split = X.split(self.physical_batch_size, dim=0)
-
-                N = len(X_split['input_ids'])
-
-                for i in range(N):
-                    if is_mapping:
-                        X_splitted = {k: X_split[k][i] for k in X_split}
-                    else:
-                        X_splitted = X_split[i]
-
-                    # NOTE: should move all defaults to cli.py
-                    generated_ids = self._unwrap_model().generate(
-                        X_splitted,
-                        max_new_tokens=250,
-                        temperature=0.5,
-                        do_sample=True,
-                        top_p=0.9,
-                        pad_token_id=self.datamodule.tokenizer.pad_token_id,
-                        eos_token_id=self.datamodule.tokenizer.eos_token_id,
-                    )
-
-                    log.info('Sampled text decoded', self.datamodule.decode(generated_ids))
-
-        self.model.train()
-
 
 class DifferentiallyPrivateTrainer(Trainer):
     def __init__(
@@ -836,6 +792,8 @@ class TaskAdapter:
     def update_metrics(self, model, batch, forward_output, metrics = None):
         raise NotImplementedError
 
+    def sample(self, model, datamodule, physical_batch_size) -> None:
+        raise NotImplementedError
 
 class ClassificationAdapter(TaskAdapter):
     def iterate_physical_batches(self, batch, physical_batch_size):
@@ -875,6 +833,13 @@ class ClassificationAdapter(TaskAdapter):
 
 
 class LanguageModelAdapter(TaskAdapter):
+    def __init__(self, device: torch.device, llm_max_new_tokens:int, llm_temperature:float, llm_top_p: float|None, llm_top_k: int|None):
+        super().__init__(device)
+        self.llm_max_new_tokens = llm_max_new_tokens
+        self.llm_temperature = llm_temperature
+        self.llm_top_p = llm_top_p
+        self.llm_top_k = llm_top_k
+
     def iterate_physical_batches(self, batch, physical_batch_size):
         X, y = batch
         splits = {k: v.split(physical_batch_size, dim=0) for k, v in X.items()}
@@ -927,12 +892,9 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
     """
     needs_generation_eval = True
 
-    def __init__(self, device):
-        super().__init__(device)
+    def __init__(self, device, **kwargs):
+        super().__init__(device, **kwargs)
         self.tokens_labels = None
-
-    def sample(self, trainer):
-        trainer._sample_impl()
 
     def evaluate_diseases_accuracy_exact_matching(self, trainer):
         log.info('Evaluating diseases accuracy with exact matching...')
@@ -1366,6 +1328,48 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
 
         self.tokens_labels = diseases
 
+    def sample(self, model, datamodule, physical_batch_size) -> None:
+        model.eval()
+
+        with torch.no_grad():
+            for batch_idx, batch in enumerate(datamodule.get_dataloader('sample')):
+                # DiseaseTask's sample loader yields (tokenized, raw_fields);
+                # basic language tasks yield just the tokenized inputs.
+                X = batch[0]
+                X = self.move_to_device(X)
+                is_mapping = isinstance(X, Mapping)  # covers dict and HF BatchEncoding
+                # gradient accumulation. split the batch to sub batches that fit in the GPU memory.
+                # then process the sub batches one at a time and call backward.
+                # when all the sub batches have been processed we can finally step the optimizer.
+                if is_mapping:
+                    # split each tensor in the dict
+                    X_split = {k: v.split(physical_batch_size, dim=0) for k, v in X.items()}
+                else:
+                    X_split = X.split(physical_batch_size, dim=0)
+
+                N = len(X_split['input_ids'])
+
+                for i in range(N):
+                    if is_mapping:
+                        X_splitted = {k: X_split[k][i] for k in X_split}
+                    else:
+                        X_splitted = X_split[i]
+
+                    generated_ids = model.generate(
+                        X_splitted,
+                        max_new_tokens=self.llm_max_new_tokens,
+                        temperature=self.llm_temperature,
+                        do_sample=True,
+                        top_p=self.llm_top_p,
+                        top_k=self.llm_top_k,
+                        pad_token_id=datamodule.tokenizer.pad_token_id,
+                        eos_token_id=datamodule.tokenizer.eos_token_id,
+                    )
+
+                    log.info(f'Sampled text decoded, {datamodule.decode(generated_ids)})')
+
+        model.train()
+
 
 def find_disease_token_span(token_ids, disease_text, tokenizer):
     """Find the [start, end) token span covering `disease_text` in `token_ids`.
@@ -1532,7 +1536,13 @@ class TrainerFactory:
         if task not in _ADAPTERS:
             raise ValueError(f'No adapter for task "{task}"')
 
-        return _ADAPTERS[task](device)
+        adapter_args = {}
+        if configuration.task in ['CausalLLM', 'InstructLM', 'DiseaseTask']:
+            adapter_args['llm_max_new_tokens'] = configuration.llm_max_new_tokens
+            adapter_args['llm_temperature'] = configuration.llm_temperature
+            adapter_args['llm_top_p'] = configuration.llm_top_p
+            adapter_args['llm_top_k'] = configuration.llm_top_k
+        return _ADAPTERS[task](device, **adapter_args)
 
     @staticmethod
     def get_trainer(config_manager: ConfigurationManager) -> Trainer:
@@ -1608,7 +1618,7 @@ class TrainerFactory:
         epochs, total_steps = TrainerFactory._get_epochs_and_steps(configuration, hyperparams, datamodule)
 
         adapter = TrainerFactory._make_adapter(configuration, device)
-        # Note: can move this?
+        # NOTE: can move this? would be better at DiseaseTask init
         # Build the disease label->token/text mapping (no-op for other tasks).
         adapter.set_label_tokens(datamodule)
 

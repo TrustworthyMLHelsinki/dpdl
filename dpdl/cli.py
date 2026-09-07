@@ -108,13 +108,6 @@ def cli(
                 rich_help_panel='Training options',
             )
         ] = None,
-        max_length: Annotated[
-            Optional[int],
-            typer.Option(
-                help='Max tokenizer length',
-                rich_help_panel='Training options'
-            )
-        ] = None,
         optimizer: Annotated[
             str,
             typer.Option(
@@ -210,9 +203,16 @@ def cli(
             bool,
             typer.Option(
                 help='Enable LLM model mode (use HuggingFace models and tokenization)',
-                rich_help_panel='Training options',
+                rich_help_panel='LLM training options',
             )
         ] = False,
+        max_length: Annotated[
+            Optional[int],
+            typer.Option(
+                help='Max tokenizer length',
+                rich_help_panel='LLM training options'
+            )
+        ] = None,
         task: Annotated[
             str,
             typer.Option(
@@ -445,13 +445,6 @@ def cli(
                 rich_help_panel='Logging options',
             )
         ] = False,
-        record_llm_samples: Annotated[
-            Optional[bool],
-            typer.Option(
-                help='Generate and log LLM samples at epoch end',
-                rich_help_panel='Logging options',
-            )
-        ] = False,
         record_gradient_norms: Annotated[
             Optional[bool],
             typer.Option(
@@ -677,6 +670,41 @@ def cli(
                 rich_help_panel='Logging options',
             )
         ] = None,
+        record_llm_samples: Annotated[
+            Optional[bool],
+            typer.Option(
+                help='Generate and log LLM samples at epoch end',
+                rich_help_panel='LLM generation options',
+            )
+        ] = False,
+        llm_max_new_tokens: Annotated[
+            Optional[int],
+            typer.Option(
+                help='Max tokens when generating',
+                rich_help_panel='LLM generation options',
+            )
+        ] = 250,
+        llm_temperature: Annotated[
+            Optional[float],
+            typer.Option(
+                help='Next token generation temperature',
+                rich_help_panel='LLM generation options',
+            )
+        ] = 0.5,
+        llm_top_p: Annotated[
+            Optional[float],
+            typer.Option(
+                help='Top-p probability for next token generation',
+                rich_help_panel='LLM generation options',
+            )
+        ] = 0.9,
+        llm_top_k: Annotated[
+            Optional[int],
+            typer.Option(
+                help='Top-k for next token generation.',
+                rich_help_panel='LLM generation options',
+            )
+        ] = None,
     ):
 
     # Map from commands to functions
@@ -737,14 +765,12 @@ def run_train(config_manager: ConfigurationManager) -> Optional[Path]:
         log.info('Starting training.')
         log.info(config_manager.hyperparams)
         log.info(config_manager.configuration)
-        #"""
         if config_manager.wandb_params:
             wandb_run = wandb.init(
                 entity=config_manager.wandb_params['wandb_username'],
                 project=config_manager.wandb_params['wandb_project'],
                 config=config_manager._cli_params,
             )
-        #"""
 
     seed_everything(config_manager.configuration.seed)
 
