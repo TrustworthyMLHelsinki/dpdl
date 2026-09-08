@@ -154,10 +154,12 @@ class Configuration(BaseModel):
     wandb_logging: bool = False
     wandb_username: Optional[str] = None
     wandb_project_name: Optional[str] = None
-    llm_max_new_tokens: Optional[int] = 250
-    llm_temperature: Optional[float] = 0.5
+    llm_max_new_tokens: Optional[int] = 60
+    llm_temperature: Optional[float] = 0.1
     llm_top_p: Optional[float] = 0.9
     llm_top_k: Optional[int] = None
+    llm_repetition_penalty: Optional[float] = 1.2
+    llm_no_repeat_ngram_size: Optional[int] = 4
 
     class Config:
         # Fix Pydantic warning:
@@ -334,6 +336,8 @@ class Configuration(BaseModel):
                 ('LLM temperature', self.llm_temperature),
                 ('LLM top p', self.llm_top_p),
                 ('LLM top k', self.llm_top_k),
+                ('LLM repetition penalty', self.llm_repetition_penalty),
+                ('LLM no repeat ngram size', self.llm_no_repeat_ngram_size),
             ]
             attributes.extend(llm_attributes)
 

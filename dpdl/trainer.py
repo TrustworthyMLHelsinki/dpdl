@@ -833,12 +833,14 @@ class ClassificationAdapter(TaskAdapter):
 
 
 class LanguageModelAdapter(TaskAdapter):
-    def __init__(self, device: torch.device, llm_max_new_tokens:int, llm_temperature:float, llm_top_p: float|None, llm_top_k: int|None):
+    def __init__(self, device: torch.device, llm_max_new_tokens:int, llm_temperature:float, llm_top_p: float|None, llm_top_k: int|None, llm_repetition_penalty: float, llm_no_repeat_ngram_size: int|None):
         super().__init__(device)
         self.llm_max_new_tokens = llm_max_new_tokens
         self.llm_temperature = llm_temperature
         self.llm_top_p = llm_top_p
         self.llm_top_k = llm_top_k
+        self.llm_repetition_penalty = llm_repetition_penalty
+        self.llm_no_repeat_ngram_size = llm_no_repeat_ngram_size
 
     def iterate_physical_batches(self, batch, physical_batch_size):
         X, y = batch
@@ -969,16 +971,17 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
                     # NOTE: should have configs in cli options with other params!
                     generate_output = trainer._unwrap_model().generate(
                         X_splitted,
-                        max_new_tokens=60,
+                        max_new_tokens=self.llm_max_new_tokens,
                         do_sample=True,
-                        temperature=0.1,
-                        top_p=0.9,
+                        temperature=self.llm_temperature,
+                        top_p=self.llm_top_p,
+                        top_k=self.llm_top_k,
                         pad_token_id=trainer.datamodule.tokenizer.pad_token_id,
                         eos_token_id=trainer.datamodule.tokenizer.eos_token_id,
                         output_scores=True,
                         return_dict_in_generate=True,
-                        repetition_penalty=1.2,
-                        no_repeat_ngram_size=4,
+                        repetition_penalty=self.llm_repetition_penalty,
+                        no_repeat_ngram_size=self.llm_no_repeat_ngram_size,
                     )
                     generated_ids = generate_output.sequences  # (B, full_seq_len)
                     scores = generate_output.scores            # tuple of (B, vocab) tensors
@@ -1208,7 +1211,7 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
                         row[pred_text] = cnt
                 na = int(confusion_total[r, n_d].item())
                 if na > 0:
-                    row[NO_PREDICTION_KEY] = na
+                    row['__no_prediction__'] = na
                 if row:
                     disease_confusion[truth_text] = row
 
@@ -1438,9 +1441,6 @@ def _disease_log_prob(scores, generated_ids, disease_text, tokenizer, input_len,
         return None
     return total_lp / n_tokens
 
-# NOTE: where should this go?
-NO_PREDICTION_KEY = '__no_prediction__'
-
 def extract_predicted_disease(text, disease_texts):
     """Return the single disease name the model most plausibly predicted in `text`.
 
@@ -1542,6 +1542,8 @@ class TrainerFactory:
             adapter_args['llm_temperature'] = configuration.llm_temperature
             adapter_args['llm_top_p'] = configuration.llm_top_p
             adapter_args['llm_top_k'] = configuration.llm_top_k
+            adapter_args['llm_repetition_penalty'] = configuration.llm_repetition_penalty
+            adapter_args['llm_no_repeat_ngram_size'] = configuration.llm_no_repeat_ngram_size
         adapter = _ADAPTERS[task](device, **adapter_args)
         # Build the disease label->token/text mapping (no-op for other tasks).
         adapter.set_label_tokens(datamodule)

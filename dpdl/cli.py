@@ -705,6 +705,20 @@ def cli(
                 rich_help_panel='LLM generation options',
             )
         ] = None,
+        llm_repetition_penalty: Annotated[
+            Optional[float],
+            typer.Option(
+                help='Penalty for repetition. 1.0 means no penalty',
+                rich_help_panel='LLM generation options',
+            )
+        ] = None,
+        llm_no_repeat_ngram_size: Annotated[
+            Optional[int],
+            typer.Option(
+                help='If set to > 0, all ngrams of that size can only occur once.',
+                rich_help_panel='LLM generation options',
+            )
+        ] = None,
     ):
 
     # Map from commands to functions
