@@ -1367,6 +1367,8 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
                         top_k=self.llm_top_k,
                         pad_token_id=datamodule.tokenizer.pad_token_id,
                         eos_token_id=datamodule.tokenizer.eos_token_id,
+                        repetition_penalty=self.llm_repetition_penalty,
+                        no_repeat_ngram_size = self.llm_no_repeat_ngram_size,
                     )
 
                     log.info(f'Sampled text decoded, {datamodule.decode(generated_ids)})')
