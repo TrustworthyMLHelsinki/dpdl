@@ -279,7 +279,6 @@ class Trainer:
 
     def _evaluate(self, mode, epoch=None, enable_callbacks=True):
         if enable_callbacks and is_global_zero():
-            # NOTE: this is main, shouldn't be zero for disease?
             self.callback_handler.call(f'on_{mode}_epoch_start', self, epoch)
 
         self.model.eval()
@@ -334,7 +333,7 @@ class Trainer:
 
         # Callbacks run on rank 0 only, so they cannot reduce a loss themselves
         # Hand them the already-reduced one
-        if enable_callbacks:
+        if enable_callbacks and is_global_zero():
             self.callback_handler.call(f'on_{mode}_epoch_end', self, epoch, metrics, evaluation_loss)
 
         return evaluation_loss, metrics
@@ -934,6 +933,7 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
         n_d = len(disease_ids_sorted)
         id_to_row           = {did: r for r, did in enumerate(disease_ids_sorted)}
         disease_text_to_col = {t: c for c, t in enumerate(disease_texts_sorted)}
+        # note: any use for disease_ids_sorted, id_to_row? possible to have some diseases missing so wouldn't be just linspace?
         # rows = truth disease, cols = predicted disease, last col = "no prediction".
         confusion_local = torch.zeros(n_d, n_d + 1, dtype=torch.float64)
 
@@ -968,7 +968,6 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
 
                     # output_scores=True gives us per-step logits so we can compute
                     # the model's confidence in the disease tokens it generated.
-                    # NOTE: should have configs in cli options with other params!
                     generate_output = trainer._unwrap_model().generate(
                         X_splitted,
                         max_new_tokens=self.llm_max_new_tokens,
@@ -995,7 +994,7 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
                     # Evaluate disease label (via integer → text lookup)
                     if '_disease_id' in raw_chunk:
                         disease_texts = [self.tokens_labels[idx.item()]['text'] for idx in raw_chunk['_disease_id']]
-                        count_true['disease'] = count_true_labels(disease_texts, count_true['disease'])
+                        count_true['disease'] = self.count_true_labels(disease_texts, count_true['disease'])
 
                         # exact_matching gives per-batch aggregate; we need per-sample for confidence.
                         for b in range(chunk_size):
@@ -1012,7 +1011,7 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
                                 count_correct['disease'][disease_text] = count_correct['disease'].get(disease_text, 0) + 1
                                 corr_total += 1
 
-                            log_prob = _disease_log_prob(
+                            log_prob = self._disease_log_prob(
                                 scores,
                                 generated_ids,
                                 disease_text,
@@ -1025,7 +1024,7 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
                             # Confusion matrix: pick a single predicted disease for this sample.
                             truth_id  = raw_chunk['_disease_id'][b].item()
                             truth_row = id_to_row[truth_id]
-                            predicted = extract_predicted_disease(cleaned_text, disease_texts_sorted)
+                            predicted = self.extract_predicted_disease(cleaned_text, disease_texts_sorted)
                             pred_col  = disease_text_to_col[predicted] if predicted is not None else n_d
                             confusion_local[truth_row, pred_col] += 1
 
@@ -1059,8 +1058,8 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
                     for field in DISEASE_EVAL_FIELDS:
                         if field in raw_chunk:
                             field_values = raw_chunk[field]
-                            count_true[field] = count_true_labels(field_values, count_true[field])
-                            _, count_correct[field] = exact_matching(decoded_text, field_values, count_correct[field])
+                            count_true[field] = self.count_true_labels(field_values, count_true[field])
+                            _, count_correct[field] = self.exact_matching(decoded_text, field_values, count_correct[field])
 
                     total += chunk_size
                     offset += chunk_size
@@ -1188,12 +1187,13 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
                 f'incorrect={confidence_stats["mean_log_prob_incorrect"]:.3f}, '
                 f'n_with_scores={n_with_conf}/{total})'
             )
-            accuracy_per_disease = compute_accuracy_per_disease(
+            accuracy_per_disease = self.compute_accuracy_per_disease(
                 self.tokens_labels, count_correct['disease'], count_true['disease']
             )
+            # NOTE: should wandb per-disease acc?
             log.info(f'Per-disease breakdown: {accuracy_per_disease}')
             for field in ['name', 'country']:
-                breakdown = compute_accuracy_per_value(count_correct[field], count_true[field])
+                breakdown = self.compute_accuracy_per_value(count_correct[field], count_true[field])
                 log.info(f'Per-{field} breakdown ({len(breakdown)} unique values):')
                 for value, stats in breakdown.items():
                     log.info(
@@ -1243,11 +1243,6 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
         )
 
     def eval_acc(self, trainer, metrics_evaluator):
-        is_dist = (
-            torch.distributed.is_available()
-            and torch.distributed.is_initialized()
-            and torch.distributed.get_world_size() > 1
-        )
 
         if is_global_zero():
             log.info('Evaluating diseases accuracy with exact matching after the epoch...')
@@ -1375,150 +1370,146 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
 
         model.train()
 
+    def find_disease_token_span(self, token_ids, disease_text, tokenizer):
+        """Find the [start, end) token span covering `disease_text` in `token_ids`.
 
-def find_disease_token_span(token_ids, disease_text, tokenizer):
-    """Find the [start, end) token span covering `disease_text` in `token_ids`.
+        The search happens in *text* space, then we walk the tokens once to project
+        the character range back onto token indices. Assumes a byte-level /
+        SentencePiece tokenizer where decode is additive over tokens (OLMo, GPT-*,
+        Llama, Mistral, ...). Returns (-1, -1) when not present.
+        """
+        if isinstance(token_ids, torch.Tensor):
+            token_ids = token_ids.tolist()
 
-    The search happens in *text* space, then we walk the tokens once to project
-    the character range back onto token indices. Assumes a byte-level /
-    SentencePiece tokenizer where decode is additive over tokens (OLMo, GPT-*,
-    Llama, Mistral, ...). Returns (-1, -1) when not present.
-    """
-    if isinstance(token_ids, torch.Tensor):
-        token_ids = token_ids.tolist()
+        if not token_ids or not disease_text:
+            return -1, -1
 
-    if not token_ids or not disease_text:
-        return -1, -1
+        full_text = tokenizer.decode(token_ids, skip_special_tokens=False)
+        char_pos = full_text.lower().find(disease_text.lower())
+        if char_pos < 0:
+            return -1, -1
+        char_end = char_pos + len(disease_text)
 
-    full_text = tokenizer.decode(token_ids, skip_special_tokens=False)
-    char_pos = full_text.lower().find(disease_text.lower())
-    if char_pos < 0:
-        return -1, -1
-    char_end = char_pos + len(disease_text)
+        cursor = 0
+        start_token = None
+        end_token = None
+        for i, tid in enumerate(token_ids):
+            tok_str = tokenizer.decode([tid], skip_special_tokens=False)
+            next_cursor = cursor + len(tok_str)
+            if start_token is None and cursor <= char_pos < next_cursor:
+                start_token = i
+            if start_token is not None and char_end <= next_cursor:
+                end_token = i + 1
+                break
+            cursor = next_cursor
 
-    cursor = 0
-    start_token = None
-    end_token = None
-    for i, tid in enumerate(token_ids):
-        tok_str = tokenizer.decode([tid], skip_special_tokens=False)
-        next_cursor = cursor + len(tok_str)
-        if start_token is None and cursor <= char_pos < next_cursor:
-            start_token = i
-        if start_token is not None and char_end <= next_cursor:
-            end_token = i + 1
-            break
-        cursor = next_cursor
-
-    if start_token is None or end_token is None:
-        return -1, -1
-    return start_token, end_token
+        if start_token is None or end_token is None:
+            return -1, -1
+        return start_token, end_token
 
 
-def _disease_log_prob(scores, generated_ids, disease_text, tokenizer, input_len, sample_idx):
-    """Mean log-prob assigned by the model to the disease span it produced.
+    def _disease_log_prob(self, scores, generated_ids, disease_text, tokenizer, input_len, sample_idx):
+        """Mean log-prob assigned by the model to the disease span it produced.
 
-    Returns the mean log-prob (float) over the in-context tokens spanning the
-    disease, or None if the disease string is not present in the generation or
-    no scores exist.
-    """
-    if len(scores) == 0:
-        return None
-
-    new_ids = generated_ids[sample_idx, input_len:]  # generated tokens only
-    start, end = find_disease_token_span(new_ids, disease_text, tokenizer)
-    if start < 0:
-        return None
-
-    total_lp = 0.0
-    n_tokens = 0
-    new_ids_list = new_ids.tolist() if isinstance(new_ids, torch.Tensor) else list(new_ids)
-    for j in range(start, end):
-        if j >= len(scores):
+        Returns the mean log-prob (float) over the in-context tokens spanning the
+        disease, or None if the disease string is not present in the generation or
+        no scores exist.
+        """
+        if len(scores) == 0:
             return None
-        lp = torch.log_softmax(scores[j][sample_idx], dim=-1)
-        total_lp += lp[new_ids_list[j]].item()
-        n_tokens += 1
 
-    if n_tokens == 0:
-        return None
-    return total_lp / n_tokens
+        new_ids = generated_ids[sample_idx, input_len:]  # generated tokens only
+        start, end = self.find_disease_token_span(new_ids, disease_text, tokenizer)
+        if start < 0:
+            return None
 
-def extract_predicted_disease(text, disease_texts):
-    """Return the single disease name the model most plausibly predicted in `text`.
+        total_lp = 0.0
+        n_tokens = 0
+        new_ids_list = new_ids.tolist() if isinstance(new_ids, torch.Tensor) else list(new_ids)
+        for j in range(start, end):
+            if j >= len(scores):
+                return None
+            lp = torch.log_softmax(scores[j][sample_idx], dim=-1)
+            total_lp += lp[new_ids_list[j]].item()
+            n_tokens += 1
 
-    Heuristic: earliest case-insensitive occurrence of any known disease name;
-    ties broken by length (longer wins) so substring overlaps like "Pneumonia"
-    inside "Bronchopneumonia" don't masquerade as the prediction.
-    """
-    if not text:
-        return None
-    text_lower = text.lower()
-    best_pos = None
-    best_len = -1
-    best_name = None
-    for name in disease_texts:
-        if not name:
-            continue
-        idx = text_lower.find(name.lower())
-        if idx < 0:
-            continue
-        if (
-            best_pos is None
-            or idx < best_pos
-            or (idx == best_pos and len(name) > best_len)
-        ):
-            best_pos = idx
-            best_len = len(name)
-            best_name = name
-    return best_name
+        if n_tokens == 0:
+            return None
+        return total_lp / n_tokens
 
+    def extract_predicted_disease(self, text, disease_texts):
+        """Return the single disease name the model most plausibly predicted in `text`.
 
-def count_true_labels(label_text, count_true):
-    for label in label_text:
-        count_true[label] = count_true.get(label, 0) + 1
-    return count_true
+        Heuristic: earliest case-insensitive occurrence of any known disease name;
+        ties broken by length (longer wins) so substring overlaps like "Pneumonia"
+        inside "Bronchopneumonia" don't masquerade as the prediction.
+        """
+        if not text:
+            return None
+        text_lower = text.lower()
+        best_pos = None
+        best_len = -1
+        best_name = None
+        for name in disease_texts:
+            if not name:
+                continue
+            idx = text_lower.find(name.lower())
+            if idx < 0:
+                continue
+            if (
+                best_pos is None
+                or idx < best_pos
+                or (idx == best_pos and len(name) > best_len)
+            ):
+                best_pos = idx
+                best_len = len(name)
+                best_name = name
+        return best_name
 
-def exact_matching(texts, labels, count_correct=None):
-    corr = 0
-    for i in range(len(texts)):
-        label = labels[i]
-        if not label:
-            continue
-        if re.search(re.escape(label), texts[i], flags=re.IGNORECASE):
-            count_correct[label] = count_correct.get(label, 0) + 1
-            corr += 1
-    return corr, count_correct
+    def count_true_labels(self, label_text, count_true):
+        for label in label_text:
+            count_true[label] = count_true.get(label, 0) + 1
+        return count_true
 
+    def exact_matching(self, texts, labels, count_correct=None):
+        corr = 0
+        for i in range(len(texts)):
+            label = labels[i]
+            if not label:
+                continue
+            if re.search(re.escape(label), texts[i], flags=re.IGNORECASE):
+                count_correct[label] = count_correct.get(label, 0) + 1
+                corr += 1
+        return corr, count_correct
 
-def compute_accuracy_per_disease(token_labels, count_correct, count_true):
-    accuracy_per_disease = {}
-    for _, info in token_labels.items():
-        disease_name = info['text']
+    def compute_accuracy_per_disease(self, token_labels, count_correct, count_true):
+        accuracy_per_disease = {}
+        for _, info in token_labels.items():
+            disease_name = info['text']
 
-        correct_count = count_correct.get(disease_name, 0)
-        true_count = count_true.get(disease_name, 0)
+            correct_count = count_correct.get(disease_name, 0)
+            true_count = count_true.get(disease_name, 0)
 
-        accuracy = correct_count / true_count if true_count > 0 else 0.0
+            accuracy = correct_count / true_count if true_count > 0 else 0.0
 
-        accuracy_per_disease[disease_name] = {
-            'correct': correct_count,
-            'true_count': true_count,
-            'accuracy': accuracy,
-        }
-    return accuracy_per_disease
+            accuracy_per_disease[disease_name] = {
+                'correct': correct_count,
+                'true_count': true_count,
+                'accuracy': accuracy,
+            }
+        return accuracy_per_disease
 
-
-def compute_accuracy_per_value(count_correct, count_true):
-    """Per-value accuracy breakdown for arbitrary string fields (name, country, …)."""
-    result = {}
-    for value, true_count in count_true.items():
-        correct_count = count_correct.get(value, 0)
-        result[value] = {
-            'true_count': true_count,
-            'correct': correct_count,
-            'accuracy': correct_count / true_count if true_count > 0 else 0.0,
-        }
-    return dict(sorted(result.items(), key=lambda kv: kv[1]['true_count'], reverse=True))
+    def compute_accuracy_per_value(self, count_correct, count_true):
+        """Per-value accuracy breakdown for arbitrary string fields (name, country, …)."""
+        result = {}
+        for value, true_count in count_true.items():
+            correct_count = count_correct.get(value, 0)
+            result[value] = {
+                'true_count': true_count,
+                'correct': correct_count,
+                'accuracy': correct_count / true_count if true_count > 0 else 0.0,
+            }
+        return dict(sorted(result.items(), key=lambda kv: kv[1]['true_count'], reverse=True))
 
 # Define task specific adapters
 _ADAPTERS = {
