@@ -898,7 +898,8 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
         self.tokens_labels = None
 
     def evaluate_diseases_accuracy_exact_matching(self, trainer):
-        log.info('Evaluating diseases accuracy with exact matching...')
+        if is_global_zero():
+            log.info('Evaluating diseases accuracy with exact matching...')
         is_dist = (
             torch.distributed.is_available()
             and torch.distributed.is_initialized()
@@ -1530,7 +1531,7 @@ class TrainerFactory:
             raise ValueError(f'No adapter for task "{task}"')
 
         adapter_args = {}
-        if configuration.task in ['CausalLLM', 'InstructLM', 'DiseaseTask']:
+        if configuration.task in ['CausalLM', 'InstructLM', 'DiseaseTask']:
             adapter_args['llm_max_new_tokens'] = configuration.llm_max_new_tokens
             adapter_args['llm_temperature'] = configuration.llm_temperature
             adapter_args['llm_top_p'] = configuration.llm_top_p
@@ -1539,7 +1540,8 @@ class TrainerFactory:
             adapter_args['llm_no_repeat_ngram_size'] = configuration.llm_no_repeat_ngram_size
         adapter = _ADAPTERS[task](device, **adapter_args)
         # Build the disease label->token/text mapping (no-op for other tasks).
-        adapter.set_label_tokens(datamodule)
+        if configuration.task == 'DiseaseTask':
+            adapter.set_label_tokens(datamodule)
         return adapter
 
     @staticmethod
@@ -1693,7 +1695,6 @@ class TrainerFactory:
 
         # The datamodule needs to be aware of the transformations, now we can initialize it
         datamodule.initialize(transforms)
-        dataloader = datamodule.get_dataloader('train')
 
         # Are we caching the outputs of the feature extractor
         if configuration.cache_features:

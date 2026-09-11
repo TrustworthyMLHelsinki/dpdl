@@ -160,6 +160,7 @@ class Configuration(BaseModel):
     llm_top_k: Optional[int] = None
     llm_repetition_penalty: Optional[float] = 1.2
     llm_no_repeat_ngram_size: Optional[int] = 4
+    llm_system_prompt: Optional[str] = None
 
     class Config:
         # Fix Pydantic warning:
@@ -338,6 +339,7 @@ class Configuration(BaseModel):
                 ('LLM top k', self.llm_top_k),
                 ('LLM repetition penalty', self.llm_repetition_penalty),
                 ('LLM no repeat ngram size', self.llm_no_repeat_ngram_size),
+                ('LLM system prompt', self.llm_system_prompt),
             ]
             attributes.extend(llm_attributes)
 
