@@ -1106,6 +1106,7 @@ class DataModuleFactory:
                 cache_transforms=False,  # no image transforms for text
                 split_seed=configuration.split_seed,
                 device=device,
+                llm_system_prompt=configuration.llm_system_prompt,
             )
 
         return ImageDataModule(
@@ -1142,11 +1143,12 @@ class NLPDataModule(DataModule):
     '''
 
     def __init__(
-        self, text_fields=None, max_length: int = 64, task: str = None, **kwargs
+        self, text_fields=None, max_length: int = 64, task: str = None, llm_system_prompt: str = None, **kwargs
     ):
         self._text_fields = text_fields  # list of text fields or None
         self.max_length = max_length
         self.task = task
+        self.llm_system_prompt = llm_system_prompt
         super().__init__(**kwargs)
 
     def _load_datasets(self):
@@ -1337,6 +1339,7 @@ class NLPDataModule(DataModule):
             conversations = [
                 tokenizer.apply_chat_template(
                     [
+                        {'role' : 'system', 'content': self.llm_system_prompt},
                         {'role': 'user', 'content': sample['question']},
                         {'role': 'assistant', 'content': sample['answer']},
                     ],
@@ -1404,6 +1407,7 @@ class NLPDataModule(DataModule):
             conversations = [
                 tokenizer.apply_chat_template(
                     [
+                        {'role' : 'system', 'content': self.llm_system_prompt},
                         {'role': 'user', 'content': sample['question']},
                         {'role': 'assistant', 'content': _assistant_content(sample)},
                     ],
@@ -1422,10 +1426,11 @@ class NLPDataModule(DataModule):
                 add_special_tokens=True,
             )
 
-            # Mask the user portion out of the loss (same as InstructLM).
+            # Mask the system & user portions out of the loss (same as InstructLM).
             user_texts = [
                 tokenizer.apply_chat_template(
-                    [{'role': 'user', 'content': q['question']}],
+                    [{'role': 'system', 'content': self.llm_system_prompt},
+                        {'role': 'user', 'content': q['question']}],
                     tokenize=False,
                     add_generation_prompt=True,
                 )
@@ -1455,7 +1460,8 @@ class NLPDataModule(DataModule):
     def tokenize_for_sample(self, batch):
         conversations = [
             self.tokenizer.apply_chat_template(
-                [{'role': 'user', 'content': sample['question']}],
+                [{'role': 'system', 'content': self.llm_system_prompt},
+                    {'role': 'user', 'content': sample['question']}],
                 tokenize=False,
                 add_generation_prompt=True,
             )
