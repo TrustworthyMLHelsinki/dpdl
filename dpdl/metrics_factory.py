@@ -104,8 +104,6 @@ class LanguageModelMetrics(torchmetrics.MetricCollection):
                 sync_on_compute=sync,
             ),
         }
-        # define logging names for wandb
-        self.wandb_metrics_names = {'MulticlassAccuracy': 'Training/MulticlassAccuracy', 'Perplexity': 'Training/Perplexity'}
 
         if custom_metrics:
             metrics.update(custom_metrics)
@@ -168,7 +166,6 @@ class DiseaseMetrics(LanguageModelMetrics):
                  sync: bool,
                  custom_metrics: Optional[Dict[str, torchmetrics.Metric]] = None,
                  ) -> None:
-        self.wandb_metrics_names = None
         super().__init__(vocab_size=vocab_size, ignore_index=ignore_index, sync=sync)
         self.add_metrics({
             # Fraction of generated answers that contain the correct disease name (utility).
@@ -190,22 +187,6 @@ class DiseaseMetrics(LanguageModelMetrics):
             'MeanLogProbCorrect': CustomAccuracyLog(),
             'MeanLogProbIncorrect': CustomAccuracyLog(),
         })
-        # define logging names for wandb
-        tmp_dict = {'MulticlassAccuracyDisease' : 'Disease/MulticlassAccuracyDisease',
-                                    'AccuracyName' : 'Disease/AccuracyName',
-                                    'AccuracyCountry' : 'Disease/AccuracyCountry',
-                                    'AccuracyOccupation' : 'Disease/AccuracyOccupation',
-                                    'AccuracyHobby' : 'Disease/AccuracyHobby',
-                                    'AccuracySymptoms' : 'Disease/AccuracySymptoms',
-                                    'AccuracyTreatment' : 'Disease/AccuracyTreatment',
-                                    'ConfidenceWeightedAccuracyDisease': 'Disease/ConfidenceWeightedAccuracyDisease',
-                                    'MeanLogProbCorrect' : 'Disease/MeanLogProbCorrect',
-                                    'MeanLogProbIncorrect' : 'Disease/MeanLogProbIncorrect',
-                                    }
-        if self.wandb_metrics_names:
-            self.wandb_metrics_names.update(tmp_dict)
-        else:
-            self.wandb_metrics_names = tmp_dict
 
         #if custom_metrics:
         #    metrics.update(custom_metrics)
