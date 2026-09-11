@@ -711,14 +711,21 @@ def cli(
                 help='Penalty for repetition. 1.0 means no penalty',
                 rich_help_panel='LLM generation options',
             )
-        ] = None,
+        ] = 1.2,
         llm_no_repeat_ngram_size: Annotated[
             Optional[int],
             typer.Option(
                 help='If set to > 0, all ngrams of that size can only occur once.',
                 rich_help_panel='LLM generation options',
             )
-        ] = None,
+        ] = 4,
+        llm_system_prompt : Annotated[
+            Optional[str],
+            typer.Option(
+                help='System prompt for LLM generation.',
+                rich_help_panel='LLM generation options',
+            )
+        ] = 'You are a helpful medical doctor. Answer the user by a diagnosis. Be brief.',
     ):
 
     # Map from commands to functions
@@ -780,7 +787,11 @@ def run_train(config_manager: ConfigurationManager) -> Optional[Path]:
         log.info(config_manager.hyperparams)
         log.info(config_manager.configuration)
         if config_manager.wandb_params:
+
+            #log.warning("No wandb logging; check in cli-py!")
+
             wandb_run = wandb.init(
+                #mode='disabled',
                 entity=config_manager.wandb_params['wandb_username'],
                 project=config_manager.wandb_params['wandb_project'],
                 config=config_manager._cli_params,
