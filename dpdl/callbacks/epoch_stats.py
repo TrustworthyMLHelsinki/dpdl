@@ -67,7 +67,7 @@ class RecordEpochStatsCallback(Callback):
             else:
                 log.info(f"Approximate epoch {epoch+1} finished. Loss: {loss:.4f}.")
             if trainer.wandb_logging and metrics:
-                wandb.log({**{'Epoch': epoch, 'Training/Loss': loss}, **{(trainer.wandb_metrics_names['train'][k] if k in trainer.wandb_metrics_names['train'] else k): v for k, v in metrics.items()}} )
+                wandb.log({**{'Epoch': epoch, 'Training/Loss': loss}, **{ "Training/"+k:v for k, v in metrics.items()} } )
             self._log_metrics(metrics, "Train metrics")
 
     def on_train_batch_end(self, trainer, batch_idx, batch, loss):
@@ -78,14 +78,18 @@ class RecordEpochStatsCallback(Callback):
         # ALSO: removed on batch end callbacks?
         if self._is_global_zero():
             if trainer.wandb_logging and metrics:
-                wandb.log({**{'Epoch': epoch, 'Validation/Loss': loss}, **{(trainer.wandb_metrics_names['valid'][k] if k in trainer.wandb_metrics_names['valid'] else k): v for k, v in metrics.items()}} )
+                wandb.log(
+                    {**{'Epoch': epoch, 'Valid/Loss': loss}, **{"Valid/" + k: v for k, v in metrics.items()}})
+                pass
             log.info(f"Validation finished. Loss: {loss:.4f}.")
             self._log_metrics(metrics, "Validation metrics")
 
     def on_test_epoch_end(self, trainer, epoch, metrics, loss):
         if self._is_global_zero():
             if trainer.wandb_logging and metrics:
-                wandb.log({**{'Epoch': epoch, 'Test/Loss': loss}, **{(trainer.wandb_metrics_names['test'][k] if k in trainer.wandb_metrics_names['test'] else k): v for k, v in metrics.items()}} )
+                wandb.log(
+                    {**{'Epoch': epoch, 'Test/Loss': loss}, **{"Test/" + k: v for k, v in metrics.items()}})
+                pass
             log.info(f"Test finished. Loss: {loss:.4f}.")
             self._log_metrics(metrics, "Test metrics")
 

@@ -58,7 +58,6 @@ class Trainer:
         task: str | None = None,
         device: torch.device | None = None,
         wandb_logging: bool = False,
-        wandb_metrics_names: dict | None = None,
     ):
 
         self.model = model
@@ -75,7 +74,6 @@ class Trainer:
         self.adapter = adapter
         self.adapter.device = self.device
         self.wandb_logging = wandb_logging
-        self.wandb_metrics_names = wandb_metrics_names
 
         # Resume support: epoch to start the training loop from (0 = fresh run).
         # Set by load_training_state() when resuming from a checkpoint.
@@ -1635,9 +1633,6 @@ class TrainerFactory:
             task=configuration.task,
             device=device,
             wandb_logging=configuration.wandb_logging,
-            wandb_metrics_names={'train': metrics['train_metrics'].wandb_metrics_names,
-                                 'valid': metrics['valid_metrics'].wandb_metrics_names,
-                                 'test': metrics['test_metrics'].wandb_metrics_names},
         )
 
         return trainer
@@ -1742,9 +1737,6 @@ class TrainerFactory:
             task=configuration.task,
             device=device,
             wandb_logging=configuration.wandb_logging,
-            wandb_metrics_names={'train' : metrics['train_metrics'].wandb_metrics_names,
-                                 'valid' : metrics['valid_metrics'].wandb_metrics_names,
-                                 'test': metrics['test_metrics'].wandb_metrics_names},
         )
 
         return trainer
