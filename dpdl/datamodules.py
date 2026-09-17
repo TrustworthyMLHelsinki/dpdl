@@ -1143,7 +1143,7 @@ class NLPDataModule(DataModule):
     '''
 
     def __init__(
-        self, text_fields=None, max_length: int = 64, task: str = None, llm_system_prompt: str = None, **kwargs
+        self, text_fields, max_length: int, task: str, llm_system_prompt: str, **kwargs
     ):
         self._text_fields = text_fields  # list of text fields or None
         self.max_length = max_length
@@ -1318,7 +1318,7 @@ class NLPDataModule(DataModule):
             tokenized = tokenizer(
                 texts,
                 padding=True,
-                padding_side='left',
+                padding_side='right', # for next token prediction in training, want padding on the right
                 truncation=True,
                 max_length=max_len,
                 return_tensors='pt',
@@ -1354,7 +1354,7 @@ class NLPDataModule(DataModule):
             tokenized = tokenizer(
                 conversations,
                 padding=True,
-                padding_side='left',
+                padding_side='right', # for next token prediction in training, want padding on the right
                 truncation=True,
                 max_length=max_len,
                 return_tensors='pt',
@@ -1424,7 +1424,7 @@ class NLPDataModule(DataModule):
             tokenized = tokenizer(
                 conversations,
                 padding=True,
-                padding_side='left',
+                padding_side='right', # for next token prediction in training, want padding on the right
                 truncation=True,
                 max_length=max_len,
                 return_tensors='pt',
@@ -1502,7 +1502,7 @@ class NLPDataModule(DataModule):
             tokenized = self.tokenizer(
                 conversations,
                 padding=True,
-                padding_side='left',
+                padding_side='left', # for generation, want padding on the left (to avoid generating next token from pad tokens)
                 truncation=True,
                 max_length=self.max_length,
                 return_tensors='pt',
