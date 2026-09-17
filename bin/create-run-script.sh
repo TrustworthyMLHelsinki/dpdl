@@ -60,16 +60,7 @@ ntasks_per_node=$gpus
 time=${7:-"1:00:00"}
 mem_per_gpu=${8:-"60G"}
 cpus_per_task=${9:-7}
-cpu_bind_mask="0xfe000000000000,0xfe00000000000000,0xfe0000,0xfe000000,0xfe,0xfe00,0xfe00000000,0xfe0000000000"
 nodes=1
-
-srun_args=""
-
-# if we are using all the GPUs, then set GPU binding and reserve the whole node
-if [ "$gpus" == "8" ]; then
-    srun_args="$srun_args --cpu-bind=mask_cpu:$cpu_bind_mask"
-    srun_args="$srun_args --exclusive"
-fi
 
 if [ "$partition" == "dev-g" ]; then
     time="00:15:00"
@@ -85,10 +76,6 @@ fi
 # Create the wrapper script dynamically
 cat <<EOF > $wrapper_script
 #!/bin/bash
-
-MIOPEN_DIR=\$(mktemp -d)
-export MIOPEN_CUSTOM_CACHE_DIR=\$MIOPEN_DIR/cache
-export MIOPEN_USER_DB=\$MIOPEN_DIR/config
 
 # Distributed settings
 export MASTER_PORT=\$(expr 30000 + \$(echo -n \$SLURM_JOBID | tail -c 4))
@@ -127,16 +114,13 @@ cat <<EOF > $script_name
 #SBATCH --error=slurm-%x.%j.out
 #SBATCH --output=slurm-%x.%j.stdout
 
-# Fix for illegal memory access with convolutional networks
-export MIOPEN_DEBUG_CONV_CK_IGEMM_FWD_V6R1_DLOPS_NCHW=0
-
 # Project specific settings
 export PROJECT="$project"
 export DATA_DIR="/scratch/\$PROJECT/data"
 export HF_DATASETS_CACHE="\$DATA_DIR/huggingface"
-export HUGGINGFACE_HUB_CACHE="\$DATA_DIR/huggingface_hub"
+export HF_HUB_CACHE="\$DATA_DIR/huggingface_hub"
 export TORCH_HOME="\$DATA_DIR/torch"
-export _TYPER_STANDARD_TRACEBACK=1
+export TYPER_STANDARD_TRACEBACK=1
 
 EOF
 
@@ -160,7 +144,7 @@ fi
 cat <<EOF >> $script_name
 # Run the wrapper script with srun
 set -xv
-srun $srun_args ./$wrapper_script \$@
+srun ./$wrapper_script \$@
 EOF
 
 # Make the main script executable
