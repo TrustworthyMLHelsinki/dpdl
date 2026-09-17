@@ -1318,6 +1318,7 @@ class NLPDataModule(DataModule):
             tokenized = tokenizer(
                 texts,
                 padding=True,
+                padding_side='left',
                 truncation=True,
                 max_length=max_len,
                 return_tensors='pt',
@@ -1353,19 +1354,22 @@ class NLPDataModule(DataModule):
             tokenized = tokenizer(
                 conversations,
                 padding=True,
+                padding_side='left',
                 truncation=True,
                 max_length=max_len,
                 return_tensors='pt',
                 add_special_tokens=True,
             )
 
-            # We need the user tokens, only that part, so we can remove that from the
+            # We need the system prompt & user tokens, so we can remove those from the
             # loss function
 
             # Create labels with list comprehension
             user_texts = [
                 tokenizer.apply_chat_template(
-                    [{'role': 'user', 'content': q['question']}],
+                    [
+                        {'role': 'system', 'content': self.llm_system_prompt},
+                        {'role': 'user', 'content': q['question']}],
                     tokenize=False,
                     add_generation_prompt=True,
                 )
@@ -1420,6 +1424,7 @@ class NLPDataModule(DataModule):
             tokenized = tokenizer(
                 conversations,
                 padding=True,
+                padding_side='left',
                 truncation=True,
                 max_length=max_len,
                 return_tensors='pt',
@@ -1429,7 +1434,8 @@ class NLPDataModule(DataModule):
             # Mask the system & user portions out of the loss (same as InstructLM).
             user_texts = [
                 tokenizer.apply_chat_template(
-                    [{'role': 'system', 'content': self.llm_system_prompt},
+                    [
+                        {'role': 'system', 'content': self.llm_system_prompt},
                         {'role': 'user', 'content': q['question']}],
                     tokenize=False,
                     add_generation_prompt=True,
@@ -1460,7 +1466,8 @@ class NLPDataModule(DataModule):
     def tokenize_for_sample(self, batch):
         conversations = [
             self.tokenizer.apply_chat_template(
-                [{'role': 'system', 'content': self.llm_system_prompt},
+                [
+                    {'role': 'system', 'content': self.llm_system_prompt},
                     {'role': 'user', 'content': sample['question']}],
                 tokenize=False,
                 add_generation_prompt=True,
@@ -1495,6 +1502,7 @@ class NLPDataModule(DataModule):
             tokenized = self.tokenizer(
                 conversations,
                 padding=True,
+                padding_side='left',
                 truncation=True,
                 max_length=self.max_length,
                 return_tensors='pt',
