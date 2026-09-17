@@ -79,8 +79,27 @@ class RecordEpochStatsCallback(Callback):
         if self._is_global_zero():
             if trainer.wandb_logging and metrics:
                 wandb.log(
-                    {**{'Epoch': epoch, 'Valid/Loss': loss}, **{"Valid/" + k: v for k, v in metrics.items()}})
-                pass
+                    {**{'Epoch': epoch, 'Valid/Loss': loss}, **{"Valid/" + k: v for k, v in metrics.items()}}, commit=False)
+                # also update disease dicts
+                if trainer.last_per_disease_accuracy:
+                    my_table = wandb.Table(columns=["Disease", "Accuracy", "Correct", "True count"])
+                    tmp = [[],[],[],[]]
+                    for k in trainer.last_per_disease_accuracy.keys():
+                        tmp[0].append(k)
+                        for i,kk in enumerate(trainer.last_per_disease_accuracy[k].keys()):
+                            tmp[1+i].append(trainer.last_per_disease_accuracy[k][kk])
+                    my_table.add_data(*tmp)
+                    wandb.log({f"ValidTables/PerDiseaseAccEpoch{epoch}": my_table}, commit=False)
+                if trainer.last_per_sample_eval:
+                    my_table = wandb.Table(columns=[*trainer.last_per_sample_eval[0].keys()])
+                    tmp = [[] for i in range(len(trainer.last_per_sample_eval[0]))]
+                    for d in trainer.last_per_sample_eval:
+                        for i,k in enumerate(d.keys()):
+                            tmp[i].append(d[k])
+                    my_table.add_data(*tmp)
+                    wandb.log({f"ValidTables/PerSampleEvalsEpoch{epoch}": my_table}, commit=False)
+                wandb.log({}, commit=True)
+                # trainer.last_disease_confusion: skipped from logging
             log.info(f"Validation finished. Loss: {loss:.4f}.")
             self._log_metrics(metrics, "Validation metrics")
 
@@ -88,8 +107,28 @@ class RecordEpochStatsCallback(Callback):
         if self._is_global_zero():
             if trainer.wandb_logging and metrics:
                 wandb.log(
-                    {**{'Epoch': epoch, 'Test/Loss': loss}, **{"Test/" + k: v for k, v in metrics.items()}})
-                pass
+                    {**{'Epoch': epoch, 'Test/Loss': loss}, **{"Test/" + k: v for k, v in metrics.items()}}, commit=False)
+                # also update disease dicts
+                if trainer.last_per_disease_accuracy:
+                    my_table = wandb.Table(columns=["Disease", "Accuracy", "Correct", "True count"])
+                    tmp = [[], [], [], []]
+                    for k in trainer.last_per_disease_accuracy.keys():
+                        tmp[0].append(k)
+                        for i, kk in enumerate(trainer.last_per_disease_accuracy[k].keys()):
+                            tmp[1 + i].append(trainer.last_per_disease_accuracy[k][kk])
+                    my_table.add_data(*tmp)
+                    wandb.log({f"TestTables/PerDiseaseAccEpoch{epoch}": my_table}, commit=False)
+                if trainer.last_per_sample_eval:
+                    my_table = wandb.Table(columns=[*trainer.last_per_sample_eval[0].keys()])
+                    tmp = [[] for i in range(len(trainer.last_per_sample_eval[0]))]
+                    for d in trainer.last_per_sample_eval:
+                        for i, k in enumerate(d.keys()):
+                            tmp[i].append(d[k])
+                    my_table.add_data(*tmp)
+                    wandb.log({f"TestTables/PerSampleEvalsEpoch{epoch}": my_table}, commit=False)
+                    #log.info(f"{trainer.last_per_sample_eval[0]['prompt_text']},\n{trainer.last_per_sample_eval[0]['generated_text']}")
+                wandb.log({}, commit=True)
+                # trainer.last_disease_confusion: skipped from logging
             log.info(f"Test finished. Loss: {loss:.4f}.")
             self._log_metrics(metrics, "Test metrics")
 
