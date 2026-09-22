@@ -25,7 +25,7 @@ def distributed_world_size() -> int:
 def seed_everything(seed) -> None:
     if not seed:
         return
-
+    torch.backends.cudnn.benchmark = False
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
