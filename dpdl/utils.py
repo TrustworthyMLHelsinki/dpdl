@@ -27,8 +27,6 @@ def seed_everything(seed) -> None:
 =======
     if not seed:
         return
-    torch.backends.cudnn.benchmark = False
->>>>>>> abb0801 (fix: improve reproducibility in cudnn)
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
