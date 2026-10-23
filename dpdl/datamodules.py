@@ -571,6 +571,7 @@ class DataModule:
         def seed_worker(worker_id):
             worker_seed = self.seed + worker_id
             torch.manual_seed(worker_seed)
+            #log.info(f"Worker seed: {worker_seed}, rank: {torch.distributed.get_rank()}, gen state device: {self.generator.get_state().device}")
 
         self.seed_worker = seed_worker if self.seed else None
 
@@ -650,9 +651,11 @@ class DataModule:
         # for the DP case, Opacus handles distributed for us. otherwise, we need
         # to use distributedsampler and divide the batch size by number of replicas
         if not self.privacy:
-            self.train_sampler = torch.utils.data.distributed.DistributedSampler(
-                self.train_dataset.with_format('torch')
-            )
+            log.warning("using non-shuffling eval sampler for train loader!")
+            #self.train_sampler = torch.utils.data.distributed.DistributedSampler(
+            #    self.train_dataset.with_format('torch'), shuffle=True
+            #)
+            self.train_sampler = DistributedEvalSampler(self.train_dataset.with_format('torch'))
 
             # For distributed without Opacus, we need to divide the batch size
             # by the world size.

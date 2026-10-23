@@ -88,7 +88,6 @@ class Configuration(BaseModel):
     validation_frequency: float = 1.0
     seed: int = 0
     log_dir: str = 'logs'
-    checkpoints_dir: str = None
     experiment_name: str = 'default'
     overwrite_experiment: bool = False
     device: Literal['cuda', 'cpu', 'auto'] = 'auto'
@@ -161,6 +160,10 @@ class Configuration(BaseModel):
     llm_repetition_penalty: Optional[float] = 1.2
     llm_no_repeat_ngram_size: Optional[int] = 4
     llm_system_prompt: Optional[str] = None
+    lr_scheduler_type: Optional[str] = None
+    checkpoint_epoch_interval: Optional[int] = None
+    remove_old_checkpoints: Optional[bool] = True
+    resume_training_from_checkpoint: Optional[bool] = None
 
     class Config:
         # Fix Pydantic warning:
@@ -241,6 +244,12 @@ class Configuration(BaseModel):
 
         return values
 
+    @root_validator(pre=True)
+    def check_checkpointing(cls, values):
+        if values.get('checkpoint_epoch_interval') and (values.get('checkpoint_steps') or values.get("checkpoint_step_interval")):
+            raise ValueError('Parameters "checkpoint_epoch_interval" and "checkpoint_steps"/"checkpoint_step_interval" are exclusive.')
+        return values
+
     def __str__(self):
         attributes = [
             ('Command', self.command),
@@ -277,7 +286,7 @@ class Configuration(BaseModel):
             ('Use steps instead of epochs', self.use_steps),
             ('Evaluation mode', self.evaluation_mode),
             ('Save final model', self.save_model),
-            ('Path for saving/loding model weights', self.model_weights_path),
+            ('Path for saving/loading model weights', self.model_weights_path),
             ('Record clipping stats (MSE)', self.record_clipping),
             ('Record signal-to-noise ratio', self.record_snr),
             ('Record optimizer (gradient & Adam) stats', self.record_optimizer_stats),
@@ -289,8 +298,6 @@ class Configuration(BaseModel):
             ('Record train/valid metrics by epoch', self.record_metrics_by_epoch),
             ('Record per-class accuracy', self.record_per_class_accuracy),
             ('Record final training accuracy', self.record_final_train_accuracy),
-            ('Checkpoint every nth step', self.checkpoint_step_interval),
-            ('Checkpoint at exact steps', self.checkpoint_steps),
             ('Skip test evaluation', self.skip_test),
             ('Enable callback debug logging', self.verbose_callback),
             ('Fairness-style subsampling class', self.fairness_imbalance_class),
@@ -299,6 +306,12 @@ class Configuration(BaseModel):
             ('LLM use', self.llm),
             ('Task', self.task),
             ('Wandb logging', self.wandb_logging),
+            ('Lr scheduler', self.lr_scheduler_type),
+            ('Checkpoint every nth epoch', self.checkpoint_epoch_interval),
+            ('Checkpoint every nth step', self.checkpoint_step_interval),
+            ('Checkpoint at exact steps', self.checkpoint_steps),
+            ('Remove old checkpoints', self.remove_old_checkpoints),
+            ('Resume training from the checkpoint', self.resume_training_from_checkpoint),
         ]
 
         if self.privacy:

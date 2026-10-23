@@ -71,9 +71,11 @@ class ModelFactory:
         TO DO: create LLM_base class, similar to ModelBase, but for LLMs?
         or just use ModelBase directly?
         """
+        # NOTE: need to check if eg model loads checkpoints weights automatically!
 
         checkpoints_dir_latest = get_latest_checkpoint(
-            configuration.checkpoints_dir
+            #configuration.checkpoints_dir
+            os.path.join(configuration.log_dir, 'checkpoints')
         )
 
         if LLMBuilder.matches(configuration):
