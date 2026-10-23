@@ -9,6 +9,11 @@ log = logging.getLogger(__name__)
 class Callback:
     def __init__(self):
         self.global_step = 0
+        self.global_epoch = 0
+
+    def set_step_epoch(self, step: int, epoch: int):
+        self.global_step = step
+        self.global_epoch = epoch
 
     def _is_global_zero(self):
         return is_global_zero()
@@ -27,7 +32,7 @@ class Callback:
         return (total / world_size).item()
 
     def on_train_start(self, trainer):
-        self.global_step = 0
+        pass
 
     def on_train_batch_end(self, trainer, batch_idx, batch, loss):
         self.global_step += 1
@@ -39,7 +44,7 @@ class Callback:
         pass
 
     def on_train_epoch_end(self, trainer, epoch, metrics):
-        pass
+        self.global_epoch += 1
 
     def on_train_batch_start(self, trainer, batch_idx, batch):
         pass
