@@ -277,7 +277,7 @@ class HuggingfaceLanguageModel(torch.nn.Module):
 
         model_from_disk = model_cls.from_pretrained(
             fpath,
-            torch_dtype=torch.float32, # NB: No quantization support!
+            dtype=torch.float32, # NB: No quantization support!
         )
 
         try:
