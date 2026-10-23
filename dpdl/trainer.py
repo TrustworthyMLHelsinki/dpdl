@@ -3,10 +3,12 @@ from __future__ import annotations
 import logging
 import math
 import os
+import random
 import re
 import shutil
 from collections.abc import Mapping
 
+import numpy as np
 import opacus
 import torch
 from opacus import GradSampleModule
@@ -16,6 +18,7 @@ from opacus.utils.batch_memory_manager import BatchMemoryManager
 from peft import PeftModel
 import wandb
 
+from .callbacks.base_callback import Callback
 from .callbacks.callback_factory import CallbackFactory, CallbackHandler
 from .configurationmanager import Configuration, ConfigurationManager, Hyperparameters
 from .datamodules import (
@@ -57,6 +60,7 @@ class Trainer:
         peft: str | None = None,
         task: str | None = None,
         device: torch.device | None = None,
+        scheduler_factory = None,
         wandb_logging: bool = False,
     ):
 
@@ -73,12 +77,16 @@ class Trainer:
         self.device = device or torch.device('cuda')
         self.adapter = adapter
         self.adapter.device = self.device
+        # Optional LR scheduler. It is built AFTER setup() because DP wraps the
+        # optimizer there, and the scheduler must attach to the wrapped optimizer.
+        self.scheduler_factory = scheduler_factory
+        self.scheduler = None
         self.wandb_logging = wandb_logging
 
-        # Resume support: epoch to start the training loop from (0 = fresh run).
-        # Set by load_training_state() when resuming from a checkpoint.
-        # note: not implemented (yet)
+        # Resume support: epoch/step to start the training loop from (0 = fresh run).
+        # NOTE: Set by load_training_state() when resuming from a checkpoint.
         self.start_epoch = 0
+        self.start_step = 0
 
         # Some tasks (e.g. DiseaseTask) run a generation-based test/val eval that
         # issues collectives (all_reduce); those must run on ALL ranks. Others
@@ -96,10 +104,10 @@ class Trainer:
         else:
             self.callback_handler = callback_handler
 
-        if self.epochs and self.total_steps:
-            raise ValueError('You should provide either "epochs" or "total_steps", not both.')
-
         self.setup()
+
+        if self.scheduler_factory is not None:
+            self.scheduler = self.scheduler_factory(self.optimizer)
 
         # NOTE: do we need to shard this, could only run on rank 0? seems like motivation is to avoid inflating counts,
         # but this shouldn't happen if check rank before evals
@@ -149,17 +157,32 @@ class Trainer:
         torch.distributed.barrier()
 
     def _fit_epochs(self):
-        for epoch in range(self.epochs):
+
+        #log.info(f"Starting training from epoch {self.start_epoch}, rank: {torch.distributed.get_rank()}, GPU: {torch.cuda.current_device() if torch.cuda.is_available() else 'cpu'}, optimizers: {self.optimizer}")
+
+        for epoch in range(self.start_epoch, self.epochs):
+
+            #log.info(f"rank{torch.distributed.get_rank()}, epoch {epoch}, RNG samples: datamodule {torch.rand(1, generator=self.datamodule.generator)}, torch {torch.rand(1)}, numpy {np.random.rand(1)}, cuda {torch.cuda.FloatTensor(1).normal_() if torch.cuda.is_available() else None}"
+            #         # + f"\ncallbacks: {self.callback_handler.callbacks}"
+            #         + f"\noptimizer: {self.optimizer}"
+            #         + f"\noptimizer state: {self.optimizer.state_dict()}\n"
+            #         )
+
             self.fit_one_epoch(epoch)
+
+            if self.scheduler is not None:
+                self.scheduler.step()
 
             if self.validation_frequency and epoch % self.validation_frequency == 0:
                 self._run_validation(epoch)
 
     def _fit_total_steps(self):
-        step = 0
-        virtual_epoch = 0
-        steps_per_epoch = self._calculate_steps_per_epoch()
 
+        virtual_epoch = self.start_epoch
+        steps_per_epoch = self._calculate_steps_per_epoch()
+        step = self.last_completed_step
+
+        # NOTE: need to test that resume works properly with total steps
         # start the first virtual epoch
         self._handle_virtual_epoch_start(virtual_epoch)
 
@@ -209,12 +232,21 @@ class Trainer:
         self.model.train()
         self.callback_handler.call('on_train_epoch_start', self, epoch)
 
+        #log.info(f"{self.datamodule.get_dataloader('train').sampler}")
+        #import sys
+        #sys.exit()
+
         for batch_idx, batch in enumerate(self.datamodule.get_dataloader('train')):
             self.callback_handler.call('on_train_batch_start', self, batch_idx, batch)
+
+            #log.info(f"rank{torch.distributed.get_rank()} \nbatch[0]: {batch[0]['input_ids'][0][:10]}\n batch[1]:{batch[1][1][-10:]}")
 
             logical_batch_loss = self.fit_one_batch(batch_idx, batch)
 
             self.callback_handler.call('on_train_batch_end', self, batch_idx, batch, logical_batch_loss)
+
+            log.warning("stopping training in trainer!")
+            break
 
         # compute the epoch metrics
         metrics = self._unwrap_model().train_metrics.compute()
@@ -313,6 +345,9 @@ class Trainer:
             loss_sum += loss * weight
             sample_count += weight
 
+            log.warning("stopping evals in trainer")
+            break
+
         # all_reduce the weighted sum and the count separately, then divide once
         # so the global loss is sum(loss*n) / sum(n) across every rank
         totals = torch.tensor([loss_sum, float(sample_count)], device=self.device)
@@ -320,8 +355,8 @@ class Trainer:
             torch.distributed.all_reduce(totals)
         evaluation_loss = (totals[0] / totals[1]).item() if totals[1] > 0 else 0.0
 
-        # Generation-based eval (e.g. DiseaseTask disease accuracy). No-op for
-        # tasks without it. Runs before compute() so its metrics are included.
+        # Generation-based eval (e.g. DiseaseTask disease accuracy). Runs before compute() so its metrics are included.
+        # NOTE: this will currently error when run with ither tasks
         self.adapter.eval_acc(self, metrics_evaluator)
 
         metrics = metrics_evaluator.compute()
@@ -356,8 +391,6 @@ class Trainer:
             metrics=metrics_evaluator,  # record into the provided evaluator
         )
 
-        # CHECK if updates disease predictions here, if not then should only do for is_global_zero?
-        # rank checked before calling this
         if enable_callbacks:
             self.callback_handler.call(f'on_{mode}_batch_end', self, batch_idx, batch, loss.item())
 
@@ -371,9 +404,7 @@ class Trainer:
         # PeftModule. Let's just unwrap the all the get to ModelBase
         while hasattr(m, 'module'):
             m = m.module
-
         return m  # ModelBase
-
 
     def _calculate_steps_per_epoch(self):
         N = len(self.datamodule.get_dataloader('train').dataset)
@@ -412,12 +443,10 @@ class Trainer:
             if adapters_only:
                 # PeftModel knows to save the adapters only
                 model.save_pretrained(fpath)
-
                 log.info(f'Saved merged HF PEFT adapters to {fpath}')
             else:
                 # Merge PEFT into model and save the whole model
                 merged = model.merge_and_unload()
-
                 log.info(f'GOT A NEW MODEL FROM MERGE_AND_UNLOAD: {merged}')
                 # The `merge_and_unload` will incorporate the LoRA layers in
                 # the model. Then it will return as ModelBase.
@@ -430,6 +459,132 @@ class Trainer:
 
         model.save_model(fpath)
 
+
+    def load_training_state(self, checkpoints_dir: str, epochs: bool) -> bool:
+        # NOTE: check and fix this, should work for nonDP and DP both
+        # started fixing this for nonDP, haven't tried DP yet
+
+        """Restore full training state from the latest checkpoint under
+        checkpoints_dir. Returns True if a state was loaded, False if none found.
+        Must be called AFTER setup() so optimizer / scheduler / privacy_engine
+        exist. ALL ranks call this identically (they read the same rank-0-written
+        file from the shared filesystem)."""
+        #state = None
+        if is_global_zero():
+            log.info(f"Trying to load training state from {checkpoints_dir}")
+        if not checkpoints_dir or not os.path.isdir(checkpoints_dir):
+            return False
+
+        candidates = [
+            d for d in os.listdir(checkpoints_dir)
+            if ((epochs and d.startswith('checkpoint_epoch_'))
+               and os.path.isdir(os.path.join(checkpoints_dir, d))
+               and os.path.exists(os.path.join(checkpoints_dir, d, f'rank{torch.distributed.get_rank()}_training_state.pt')))
+            or ((not epochs and d.startswith('checkpoint_step_'))
+               and os.path.isdir(os.path.join(checkpoints_dir, d))
+               and os.path.exists(os.path.join(checkpoints_dir, d, f'rank{torch.distributed.get_rank()}_training_state.pt')))
+        ]
+        if not candidates:
+            log.info(f'No resumable checkpoint (with training_state.pt) in {checkpoints_dir}.')
+            return False
+
+        latest = max(
+            candidates,
+            key=lambda d: os.path.getmtime(os.path.join(checkpoints_dir, d)),
+        )
+        ckpt_dir = os.path.join(checkpoints_dir, latest)
+
+        # LoRA adapter weights: load from the same checkpoint dir into the
+        # already-built (DP-wrapped) model.
+        # should change save name based on if is adapters-only, llm etc?
+        # rather: should pass load to the model, which should know how it's saved
+        # self._load_adapter_weights_from_dir(ckpt_dir)
+        log.info(f"rank {torch.distributed.get_rank()}: loading model weights")
+        self._unwrap_model().load_model(fpath=ckpt_dir, strict=True, map_location=str(self.device), allow_partial=True)
+
+        # try loading optimizer separately, everyone uses rank0 state
+        state_path = os.path.join(ckpt_dir, f'rank0_training_state.pt')
+        state = torch.load(state_path, map_location='cpu', weights_only=False)
+        self.optimizer.load_state_dict(state['optimizer_state'])
+        for opt_state in self.optimizer.state.values():
+            for k, v in opt_state.items():
+                if isinstance(v, torch.Tensor):
+                    opt_state[k] = v.to(self.device)
+
+        # wrap model with DDP
+        self.setup()
+
+        log.info(f"rank{torch.distributed.get_rank()} optimizer state loaded")
+
+        if torch.distributed.get_rank() != 0:
+            state_path = os.path.join(ckpt_dir, f'rank{torch.distributed.get_rank()}_training_state.pt')
+            state = torch.load(state_path, map_location='cpu', weights_only=False)
+
+        #log.info(f'Loaded training state from {state_path} with keys:\n{state.keys()}')
+
+        # --- Correctness guard: σ must match what setup() just recomputed. ---
+        current_sigma = float(getattr(self.optimizer, 'noise_multiplier', 0.0))
+        saved_sigma = float(state.get('noise_multiplier', current_sigma))
+        if saved_sigma > 0 and abs(current_sigma - saved_sigma) > 1e-6:
+            raise RuntimeError(
+                f'Noise multiplier mismatch on resume: recomputed σ={current_sigma} '
+                f'but checkpoint saved σ={saved_sigma}. The epochs/target_epsilon/'
+                f'sample-rate config must be IDENTICAL to the original run. Aborting '
+                f'to avoid corrupting DP accounting.'
+            )
+
+        # Restore accountant history (drives get_epsilon), optimizer, scheduler.
+        if state.get('accountant_state', None):
+            self.privacy_engine.accountant.load_state_dict(state['accountant_state'])
+        if self.scheduler is not None and state.get('scheduler_state') is not None:
+            self.scheduler.load_state_dict(state['scheduler_state'])
+
+        # Restore RNG so Poisson sampling / dropout etc continue the same stream.
+        try:
+            torch.set_rng_state(state['rng']['torch'])
+            np.random.set_state(state['rng']['numpy'])
+            random.setstate(state['rng']['random'])
+            if state['rng']['cuda'] is not None:
+                torch.cuda.set_rng_state_all([s for s in state['rng']['cuda']])
+                log.info(f"rank{torch.distributed.get_rank()}: cuda seed set")
+            self.datamodule.generator.set_state(state['rng']['datamodule'])  # NOTE: this might cause segmentation faults
+            # self.datamodule.generator.graphsafe_set_state(state['rng']['datamodule'])
+            log.info(f"rank {torch.distributed.get_rank()}: datamodule RNG set")
+        except Exception as e:  # non-fatal: reproducibility only, not correctness
+            log.warning(f'Could not restore RNG state on resume: {e}')
+        log.info(f"RNGs set at rank{torch.distributed.get_rank()}")
+
+        #self._unwrap_model().set_metrics({'train_metrics': state['train_metrics'],
+        #'valid_metrics': state['valid_metrics'],
+        #'test_metrics': state['test_metrics'],
+        # })
+        #self.callback_handler = state['callback_handler']
+        for callback in self.callback_handler.callbacks:
+            callback.set_step_epoch(step=int(state['start_step']), epoch=int(state['start_epoch']))
+        self.start_step = int(state['start_step'])
+        self.start_epoch = int(state['start_epoch'])
+
+        if is_global_zero():
+            log.info(f'Resumed from {ckpt_dir}: start_epoch={self.start_epoch}, start_step={self.start_step}')
+        torch.distributed.barrier()
+        return True
+
+    def _load_adapter_weights_from_dir(self, ckpt_dir: str) -> None:
+        """Inject LoRA adapter weights saved by trainer.save_model() (PEFT dir
+        format) into the current DP-wrapped model via set_peft_model_state_dict."""
+        model = self._unwrap_model()
+        sf = os.path.join(ckpt_dir, 'adapter_model.safetensors')
+        binp = os.path.join(ckpt_dir, 'adapter_model.bin')
+        if os.path.exists(sf):
+            from safetensors.torch import load_file as _safe_load
+            sd = _safe_load(sf)
+        elif os.path.exists(binp):
+            sd = torch.load(binp, map_location='cpu', weights_only=True)
+        else:
+            log.warning(f'No adapter weights found in {ckpt_dir}; keeping freshly-initialized weights.')
+            return
+        from peft import set_peft_model_state_dict
+        set_peft_model_state_dict(model, sd)
 
 class DifferentiallyPrivateTrainer(Trainer):
     def __init__(
@@ -896,8 +1051,6 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
         self.tokens_labels = None
 
     def evaluate_diseases_accuracy_exact_matching(self, trainer):
-        if is_global_zero():
-            log.info('Evaluating diseases accuracy with exact matching...')
         is_dist = (
             torch.distributed.is_available()
             and torch.distributed.is_initialized()
@@ -1063,6 +1216,9 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
                     total += chunk_size
                     offset += chunk_size
 
+                log.warning("Stopping disease eval!")
+                break
+
         trainer.model.train()
 
         # Local confidence intermediates
@@ -1190,15 +1346,15 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
                 self.tokens_labels, count_correct['disease'], count_true['disease']
             )
             # NOTE: should wandb per-disease acc?
-            log.info(f'Per-disease breakdown: {accuracy_per_disease}')
+            #log.info(f'Per-disease breakdown: {accuracy_per_disease}')
             for field in ['name', 'country']:
                 breakdown = self.compute_accuracy_per_value(count_correct[field], count_true[field])
-                log.info(f'Per-{field} breakdown ({len(breakdown)} unique values):')
-                for value, stats in breakdown.items():
-                    log.info(
-                        f'  {value!r:40s}  true={stats["true_count"]:4d}  '
-                        f'correct={stats["correct"]:4d}  acc={stats["accuracy"]:.3f}'
-                    )
+                #log.info(f'Per-{field} breakdown ({len(breakdown)} unique values):')
+                #for value, stats in breakdown.items():
+                #    log.info(
+                #        f'  {value!r:40s}  true={stats["true_count"]:4d}  '
+                #        f'correct={stats["correct"]:4d}  acc={stats["accuracy"]:.3f}'
+                #    )
 
             # Build a sparse dict-of-dicts confusion matrix.
             disease_confusion = {}
@@ -1225,9 +1381,10 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
                         off_diag.append((cnt, truth_text, pred_text))
             off_diag.sort(reverse=True)
             if off_diag:
-                log.info('Top disease confusions (truth -> predicted, count):')
-                for cnt, t, p in off_diag[:10]:
-                    log.info(f'  {t!r} -> {p!r}: {cnt}')
+                pass
+                #log.info('Top disease confusions (truth -> predicted, count):')
+                #for cnt, t, p in off_diag[:10]:
+                #    log.info(f'  {t!r} -> {p!r}: {cnt}')
         else:
             accuracy_per_disease = {}
             disease_confusion = {}
@@ -1244,7 +1401,7 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
     def eval_acc(self, trainer, metrics_evaluator):
 
         if is_global_zero():
-            log.info('Evaluating diseases accuracy with exact matching after the epoch...')
+            log.info(f'Evaluating diseases accuracy with exact matching after the epoch...')
 
         acc, accuracy_per_disease, field_accuracy, confidence_stats, disease_confusion, per_sample_records = \
             self.evaluate_diseases_accuracy_exact_matching(trainer)
@@ -1278,9 +1435,9 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
             _safe_update('MeanLogProbCorrect',                confidence_stats['mean_log_prob_correct'])
             _safe_update('MeanLogProbIncorrect',              confidence_stats['mean_log_prob_incorrect'])
 
-            log.info(f'Accuracy after the epoch for diseases: {acc}')
-            log.info(f'Accuracy per disease: {accuracy_per_disease}')
-            log.info(f'Per-field accuracy: {field_accuracy}')
+            #log.info(f'Accuracy after the epoch for diseases: {acc}')
+            #log.info(f'Accuracy per disease: {accuracy_per_disease}')
+            #log.info(f'Per-field accuracy: {field_accuracy}')
 
             trainer.last_per_disease_accuracy = accuracy_per_disease
             trainer.last_disease_confusion    = disease_confusion
@@ -1405,7 +1562,6 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
         if start_token is None or end_token is None:
             return -1, -1
         return start_token, end_token
-
 
     def _disease_log_prob(self, scores, generated_ids, disease_text, tokenizer, input_len, sample_idx):
         """Mean log-prob assigned by the model to the disease span it produced.
@@ -1585,6 +1741,8 @@ class TrainerFactory:
         # This also return effective number of classes, as for LM tasks
         # it is vocabulary size and for classification tasksk it's number
         # of classes as usually.
+
+        # NOTE: should check if continues from existing run, load and fix all probably at this point
         model, transforms, output_dim_eff = ModelFactory.get_model(
             configuration,
             hyperparams,
