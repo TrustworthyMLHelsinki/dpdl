@@ -76,6 +76,14 @@ class RecordBodyAndHeadGradientNormsPerClassCallback(Callback):
                 # Clear memory after each physical batch
                 del body_grad_samples, head_grad_samples
                 torch.cuda.empty_cache()
+                # comment from DiseaseExp implementation:
+                # Drop Python references so the tensors become collectable.
+                # Do NOT call torch.cuda.empty_cache() here: it is a blocking CUDA
+                # sync whose duration differs per rank (each rank skips different
+                # classes based on cls_mask.sum() == 0 above). Called many times
+                # per physical batch, the per-rank drift accumulates until it
+                # exceeds NCCL's collective timeout and deadlocks. Python GC + the
+                # caching allocator reclaim memory without a hard sync.
 
     def on_train_batch_end(self, trainer, batch_idx, *args, **kwargs):
         super().on_train_batch_end(trainer, batch_idx, *args, **kwargs)
