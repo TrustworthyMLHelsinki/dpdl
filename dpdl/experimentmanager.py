@@ -130,7 +130,14 @@ def start_experiment_logging(
     experiment_name = config_manager.configuration.experiment_name
 
     # create a directory for the experiments and start logging there
+    # IMPORTANT: --resume must suppress --overwrite-experiment. Overwrite does
+    # shutil.rmtree on the whole experiment dir (including checkpoints/), which
+    # would delete the very checkpoint we're trying to resume from — and this
+    # runs before the trainer loads. When resuming, keep the dir intact.
     overwrite = config_manager.configuration.overwrite_experiment
+    if getattr(config_manager.configuration, 'resume_training_from_checkpoint', False) and overwrite:
+        log.info('--resume_training_from_checkpoint is set: ignoring --overwrite-experiment to preserve existing checkpoints.')
+        overwrite = False
     experiment_directory = _create_experiment_directory(log_dir, experiment_name, overwrite)
     _start_logging_to_files(log, experiment_directory)
 

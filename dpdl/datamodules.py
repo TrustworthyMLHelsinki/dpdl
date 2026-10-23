@@ -575,7 +575,17 @@ class DataModule:
         self.generator = torch.Generator()
         self.generator.manual_seed(self.seed)
 
+<<<<<<< HEAD
         self.seed_worker = _seed_worker
+=======
+        # each dataloader will get a different seed
+        def seed_worker(worker_id):
+            worker_seed = self.seed + worker_id
+            torch.manual_seed(worker_seed)
+            #log.info(f"Worker seed: {worker_seed}, rank: {torch.distributed.get_rank()}, gen state device: {self.generator.get_state().device}")
+
+        self.seed_worker = seed_worker if self.seed else None
+>>>>>>> f0d3dd4 (add checkpointing code)
 
     def _create_dataloaders(self):
         # We might need initialize a DataModule without a batch size,
@@ -653,11 +663,19 @@ class DataModule:
         # for the DP case, Opacus handles distributed for us. otherwise, we need
         # to use distributedsampler and divide the batch size by number of replicas
         if not self.privacy:
+<<<<<<< HEAD
             # all ranks need the same sampler seed for sharding
             self.train_sampler = torch.utils.data.distributed.DistributedSampler(
                 self.train_dataset.with_format('torch'),
                 seed=self.seed,
             )
+=======
+            log.warning("using non-shuffling eval sampler for train loader!")
+            #self.train_sampler = torch.utils.data.distributed.DistributedSampler(
+            #    self.train_dataset.with_format('torch'), shuffle=True
+            #)
+            self.train_sampler = DistributedEvalSampler(self.train_dataset.with_format('torch'))
+>>>>>>> f0d3dd4 (add checkpointing code)
 
             # For distributed without Opacus, we need to divide the batch size
             # by the world size.
