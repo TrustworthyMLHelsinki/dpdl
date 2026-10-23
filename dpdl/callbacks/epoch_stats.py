@@ -54,16 +54,16 @@ class RecordEpochStatsCallback(Callback):
         if self._is_global_zero():
             log.info(f"--------------------------------------------------")
             if not self.use_steps:
-                log.info(f"Starting training epoch {epoch+1}.")
+                log.info(f"Starting training epoch {epoch}.")
             else:
-                log.info(f"Starting training approximate epoch {epoch+1}.")
+                log.info(f"Starting training approximate epoch {epoch}.")
 
     def on_train_epoch_end(self, trainer, epoch, metrics):
         loss = self.train_loss.compute()
 
         if self._is_global_zero():
             if not self.use_steps:
-                log.info(f"Epoch {epoch+1} finished. Loss: {loss:.4f}.")
+                log.info(f"Epoch {epoch} finished. Loss: {loss:.4f}.")
             else:
                 log.info(f"Approximate epoch {epoch+1} finished. Loss: {loss:.4f}.")
             if trainer.wandb_logging and metrics:
