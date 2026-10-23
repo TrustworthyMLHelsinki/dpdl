@@ -725,7 +725,35 @@ def cli(
                 help='System prompt for LLM generation.',
                 rich_help_panel='LLM generation options',
             )
-        ] = 'You are a helpful medical doctor. Answer the user by a diagnosis. Be brief.',
+        ] = 'You are a medical doctor. Answer the user by a diagnosis, starting with a disease name. Be brief.',
+        lr_scheduler_type : Annotated[
+            Optional[str],
+            typer.Option(
+                help='Lr scheduler type.',
+                rich_help_panel='Training options',
+            )
+        ] = None,
+        checkpoint_epoch_interval: Annotated[
+        Optional[int],
+        typer.Option(
+            help='Save model checkpoint on every nth epoch.',
+            rich_help_panel='Training options',
+            )
+        ] = None,
+        remove_old_checkpoints: Annotated[
+        Optional[bool],
+        typer.Option(
+            help='Remove previous checkpoints after creating a new one.',
+            rich_help_panel='Training options',
+        )
+    ] = False,
+        resume_training_from_checkpoint : Annotated[
+            Optional[bool],
+            typer.Option(
+                help='Resume training from the latest checkpoint.',
+                rich_help_panel='Training options',
+            )
+        ] = False,
     ):
 
     # Map from commands to functions
@@ -800,6 +828,11 @@ def run_train(config_manager: ConfigurationManager) -> Optional[Path]:
     seed_everything(config_manager.configuration.seed)
 
     trainer = TrainerFactory.get_trainer(config_manager)
+
+    if config_manager.configuration.resume_training_from_checkpoint:
+        checkpoints_dir = f'{config_manager.configuration.log_dir}/{config_manager.configuration.experiment_name}/checkpoints'
+        if not trainer.load_training_state(checkpoints_dir=checkpoints_dir, epochs=True if config_manager.configuration.checkpoint_epoch_interval else False):
+            raise RuntimeError(f"Failed to resume training from checkpoint, aborting.")
 
     # Record model parameter count and dataset sizes
     if rank_zero:
