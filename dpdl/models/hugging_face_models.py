@@ -190,7 +190,8 @@ class HuggingfaceLanguageModel(torch.nn.Module):
 
     def forward(self, x):
         """
-        Return logits given tokenized batch or tensor input.
+        Return logits given tokenized batch or tensor input. 
+        Shape: [batch, sequence_length, vocabulary_size].
         """
         if isinstance(x, Mapping):
             out = self.model(**x)

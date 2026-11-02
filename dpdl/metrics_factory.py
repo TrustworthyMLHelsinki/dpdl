@@ -418,21 +418,6 @@ class MetricsFactory:
                 sync=eval_sync,
                 custom_metrics=_build_custom_metrics(metric_config, 'train_metrics', language_defaults, train_sync),
             )
-            #train = _metrics_diseases(
-            #    vocab_size=vocab_size,
-            #    ignore_index=ignore_index,
-            #    sync=train_sync,
-            #)
-            # valid = _metrics_diseases(
-            #     vocab_size=vocab_size,
-            #     ignore_index=ignore_index,
-            #     sync=eval_sync,
-            # )
-            # test = _metrics_diseases(
-            #     vocab_size=vocab_size,
-            #     ignore_index=ignore_index,
-            #     sync=eval_sync,
-            # )
 
         else:
             raise ValueError(f'No metrics defined for task: {task}')

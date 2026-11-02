@@ -1137,7 +1137,7 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
                     generated_ids = generate_output.sequences  # (B, full_seq_len)
                     scores = generate_output.scores            # tuple of (B, vocab) tensors
                     input_len = X_splitted['input_ids'].shape[1]
-                    decoded_text = trainer.datamodule.decode(generated_ids[:, input_len:])
+                    decoded_text = trainer.datamodule.decode(generated_ids[:, input_len:]) # extracts just the new answer for scoring
 
                     # Decode the prompt portion too — needed for reconstruction
                     # / leakage analysis. Same skip_special_tokens convention.
@@ -1281,6 +1281,9 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
             g_sum_lp_incorr = buf[2 + 2*n_f + 5].item()
             g_n_lp_incorr   = int(buf[2 + 2*n_f + 6].item())
 
+            # A score exists only when the true disease is found in the generated tokens.
+            # Wrong-disease answers usually have no score and are excluded, so this
+            # weighted accuracy can be 1.0 even when overall disease accuracy is low.
             confidence_weighted_acc = g_sum_weights / g_sum_probs if g_sum_probs > 0 else 0.0
             mean_conf_correct   = g_sum_lp_corr   / g_n_lp_corr   if g_n_lp_corr   > 0 else 0.0
             mean_conf_incorrect = g_sum_lp_incorr / g_n_lp_incorr if g_n_lp_incorr > 0 else 0.0
@@ -1299,6 +1302,7 @@ class DiseaseTaskAdapter(LanguageModelAdapter):
                 )
                 for field in all_fields
             }
+            # Same selection bias as above: answers without a score are excluded.
             if with_conf_local:
                 probs   = [math.exp(lp) for lp, _ in with_conf_local]
                 weights = [math.exp(lp) * float(c) for lp, c in with_conf_local]
