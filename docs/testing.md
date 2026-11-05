@@ -15,7 +15,7 @@
 To make losses reproducible across runs and platforms:
 - Use a small local dataset saved with `datasets.save_to_disk` and pass `--dataset-path <path>` (keep `--dataset-name` as a label only).
 - Run on CPU: `--device cpu`.
-- Fix all RNG seeds: `--seed 42` and `--split-seed 42` (or another constant). (`seed=0` disables seeding in this codebase.)
+- Fix all RNG seeds: `--seed 42` and `--split-seed 42` (or another constant). (Without --seed a random seed is drawn, so runs differ.)
 - Disable non-determinism in tests when possible:
   - Set `torch.use_deterministic_algorithms(True)` inside tests (or use env vars if preferred).
   - Set `--num-workers 0` to avoid worker-level nondeterminism.
@@ -31,7 +31,7 @@ Notes for DP runs:
 - `--device cpu`: avoids GPU hardware variability and makes CI/local runs consistent.
 - `--dataset-path <path>`: removes network dependence and fixes dataset size/content.
 - `--no-pretrained`: avoids downloading weights and makes initialization depend solely on the seed.
-- `--seed 42`: enables seeding (seed `0` disables seeding in `seed_everything`).
+- `--seed 42`: fixes the seed; without it, each run draws (and records) a random one.
 - `--split-seed 42`: fixes dataset sub‑sampling/splitting for determinism.
 - `--num-workers 0`: avoids nondeterminism from dataloader workers.
 - `--use-steps --total-steps 2`: bounds runtime and fixes the number of optimizer updates.

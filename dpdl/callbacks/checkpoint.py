@@ -93,7 +93,6 @@ class CheckpointCallback(Callback):
                     self.save_metrics(metrics, metrics_path)
                     if self.remove_old_checkpoints:
                         self._prune_old_checkpoints(checkpoints_dir=self.checkpoints_dir, keep=checkpoint_path)
-                    trainer.start_step = self.global_step
 
     def on_train_epoch_end(self, trainer, epoch, metrics, **kwargs):
 
@@ -119,7 +118,6 @@ class CheckpointCallback(Callback):
                     if os.path.exists(checkpoint_path):
                         if self.remove_old_checkpoints:
                             self._prune_old_checkpoints(checkpoints_dir=self.checkpoints_dir, keep=checkpoint_path)
-                        trainer.start_epoch = self.global_epoch
                 else:
                     # need to save cuda & datamodule rng state from all workers, possibly also other rngs
                     # writing to disk with all ranks is faster than distributed communication and saving only on rank0
@@ -185,8 +183,9 @@ class CheckpointCallback(Callback):
                 },
                 'global_step': self.global_step,
                 'global_epoch': self.global_epoch,
-                'start_step': trainer.start_step,
-                'start_epoch': trainer.start_epoch,
+                'seed': trainer.seed,
+                # only the DP optimizer draws noise. without this, a resumed run would replay the noise from step 0.
+                'noise_generator': trainer.optimizer.generator.get_state() if getattr(trainer.optimizer, 'generator', None) is not None else None,
                 # 'model_state_dict': trainer._unwrap_model().state_dict(),
                 # should be enough to only save most of these on rank0, saving on all ranks only for debugging
                 'optimizer_state': trainer.optimizer.state_dict(),

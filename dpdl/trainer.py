@@ -35,7 +35,7 @@ from .metrics_factory import MetricsFactory
 from .models.model_base import ModelBase
 from .models.model_factory import ModelFactory
 from .optimizers import OptimizerFactory
-from .utils import is_global_zero, seed_everything, shift_and_flatten
+from .utils import is_global_zero, preserve_rng_state, seed_everything, shift_and_flatten
 
 log = logging.getLogger(__name__)
 
@@ -183,10 +183,17 @@ class Trainer:
         step = self.last_completed_step
 
         # NOTE: need to test that resume works properly with total steps
+        # count full passes over the dataloader separately
+        # virtual epochs do not always line up with them, but we still want to use all data and shuffle
+        data_pass = 0
+
         # start the first virtual epoch
         self._handle_virtual_epoch_start(virtual_epoch)
 
         while step < self.total_steps:
+            self._set_sampler_epoch(data_pass)
+            data_pass += 1
+
             for batch_idx, batch in enumerate(self.datamodule.get_dataloader('train')):
                 if step >= self.total_steps:
                     break
@@ -235,6 +242,7 @@ class Trainer:
         #log.info(f"{self.datamodule.get_dataloader('train').sampler}")
         #import sys
         #sys.exit()
+        self._set_sampler_epoch(epoch)
 
         for batch_idx, batch in enumerate(self.datamodule.get_dataloader('train')):
             self.callback_handler.call('on_train_batch_start', self, batch_idx, batch)
@@ -275,7 +283,9 @@ class Trainer:
         for i, physical_batch in enumerate(physical_batches):
             self.callback_handler.call('on_train_physical_batch_start', self, i, physical_batch)
 
-            forward_output = self.adapter.forward(self._unwrap_model(), physical_batch)
+            # don't unwrap here so that gradients are still synced through DDP
+            forward_output = self.adapter.forward(self.model, physical_batch)
+
             loss = self.adapter.compute_loss(self._unwrap_model(), physical_batch, forward_output, normalize_by=N)
             self.adapter.update_metrics(self._unwrap_model(), physical_batch, forward_output)
             loss.backward()
@@ -291,7 +301,9 @@ class Trainer:
         return logical_batch_loss
 
     def validate(self, epoch=None, enable_callbacks=True):
-        return self._evaluate('validation', epoch, enable_callbacks)
+        # Checkpoints are written before validation and when restoring that random state is the one we want 
+        with preserve_rng_state():
+            return self._evaluate('validation', epoch, enable_callbacks)
 
     def test(self):
         return self._evaluate('test')
@@ -307,11 +319,34 @@ class Trainer:
 
         return count_parameters(self._unwrap_model())
 
+    def _set_sampler_epoch(self, epoch):
+        # DistributedSampler only reshuffles if told the epoch, so we have to call this every time
+        sampler = self.datamodule.get_dataloader('train').sampler
+        if isinstance(sampler, torch.utils.data.distributed.DistributedSampler):
+            sampler.set_epoch(epoch)
+
+    def _sync_ddp_buffers(self):
+        # only sync if we are using DDP and distributed computation
+        if (
+            not isinstance(self.model, torch.nn.parallel.DistributedDataParallel)
+            or not torch.distributed.is_available()
+            or not torch.distributed.is_initialized()
+            or torch.distributed.get_world_size() == 1
+        ):
+            return
+
+        with torch.no_grad():
+            for buffer in self.model.module.buffers():
+                torch.distributed.broadcast(buffer, src=0)
+
     def _evaluate(self, mode, epoch=None, enable_callbacks=True):
         if enable_callbacks and is_global_zero():
             self.callback_handler.call(f'on_{mode}_epoch_start', self, epoch)
 
         self.model.eval()
+
+        # sync buffers (i.e. BatchNorm) across ranks before evaluation to have reproducible results
+        self._sync_ddp_buffers()
         torch.set_grad_enabled(False)
 
         # record the loss separately, as we need to return it when
@@ -500,7 +535,7 @@ class Trainer:
         # rather: should pass load to the model, which should know how it's saved
         # self._load_adapter_weights_from_dir(ckpt_dir)
         log.info(f"rank {torch.distributed.get_rank()}: loading model weights")
-        self._unwrap_model().load_model(fpath=ckpt_dir, strict=True, map_location=str(self.device), allow_partial=True)
+        self._load_checkpoint_weights(ckpt_dir)
 
         # try loading optimizer separately, everyone uses rank0 state
         state_path = os.path.join(ckpt_dir, f'rank0_training_state.pt')
@@ -510,9 +545,6 @@ class Trainer:
             for k, v in opt_state.items():
                 if isinstance(v, torch.Tensor):
                     opt_state[k] = v.to(self.device)
-
-        # wrap model with DDP
-        self.setup()
 
         log.info(f"rank{torch.distributed.get_rank()} optimizer state loaded")
 
@@ -539,6 +571,10 @@ class Trainer:
         if self.scheduler is not None and state.get('scheduler_state') is not None:
             self.scheduler.load_state_dict(state['scheduler_state'])
 
+        # Must not fail silently like the RNGs below: replayed noise would break the DP accounting.
+        if state.get('noise_generator') is not None:
+            self.optimizer.generator.set_state(state['noise_generator'])
+
         # Restore RNG so Poisson sampling / dropout etc continue the same stream.
         try:
             torch.set_rng_state(state['rng']['torch'])
@@ -559,15 +595,37 @@ class Trainer:
         #'test_metrics': state['test_metrics'],
         # })
         #self.callback_handler = state['callback_handler']
+        self.start_step = int(state['global_step'])
+        self.start_epoch = int(state['global_epoch'])
         for callback in self.callback_handler.callbacks:
-            callback.set_step_epoch(step=int(state['start_step']), epoch=int(state['start_epoch']))
-        self.start_step = int(state['start_step'])
-        self.start_epoch = int(state['start_epoch'])
+            callback.set_step_epoch(step=self.start_step, epoch=self.start_epoch)
+
+        # The shuffling order depends on the seed, and a run without
+        # --seed has just drawn a new one. Keep using the original.
+        saved_seed = state.get('seed', self.seed)
+        if saved_seed != self.seed:
+            log.warning(f'Using the seed of the resumed checkpoint ({saved_seed}) instead of {self.seed}.')
+            self.seed = saved_seed
+        sampler = self.datamodule.get_dataloader('train').sampler
+        if isinstance(sampler, torch.utils.data.distributed.DistributedSampler):
+            sampler.seed = saved_seed
 
         if is_global_zero():
             log.info(f'Resumed from {ckpt_dir}: start_epoch={self.start_epoch}, start_step={self.start_step}')
         torch.distributed.barrier()
         return True
+
+    def _load_checkpoint_weights(self, ckpt_dir: str) -> None:
+        """Copy the checkpoint's weights into the existing model. The parameter objects
+        must stay the same, because the optimizer and DDP already hold references to them."""
+        model = self._unwrap_model()
+
+        if isinstance(model, PeftModel):
+            self._load_adapter_weights_from_dir(ckpt_dir)
+        elif hasattr(model.model, 'load_weights_in_place'):
+            model.model.load_weights_in_place(ckpt_dir)
+        else:
+            model.load_model(fpath=ckpt_dir, strict=True, map_location=str(self.device), allow_partial=True)
 
     def _load_adapter_weights_from_dir(self, ckpt_dir: str) -> None:
         """Inject LoRA adapter weights saved by trainer.save_model() (PEFT dir
@@ -581,10 +639,11 @@ class Trainer:
         elif os.path.exists(binp):
             sd = torch.load(binp, map_location='cpu', weights_only=True)
         else:
-            log.warning(f'No adapter weights found in {ckpt_dir}; keeping freshly-initialized weights.')
-            return
+            raise FileNotFoundError(f'No adapter weights found in {ckpt_dir}.')
         from peft import set_peft_model_state_dict
-        set_peft_model_state_dict(model, sd)
+        result = set_peft_model_state_dict(model, sd)
+        if result.unexpected_keys:
+            raise RuntimeError(f'Adapter weights in {ckpt_dir} do not match the model: {result.unexpected_keys[:5]}')
 
 class DifferentiallyPrivateTrainer(Trainer):
     def __init__(
@@ -642,8 +701,7 @@ class DifferentiallyPrivateTrainer(Trainer):
 
     def setup(self):
         noise_generator = torch.Generator(device=self.device)
-        if self.seed:
-            noise_generator.manual_seed(self.seed)
+        noise_generator.manual_seed(self.seed)
 
         self.model = self.model.to(self.device)
 

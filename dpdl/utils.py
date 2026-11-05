@@ -23,12 +23,29 @@ def distributed_world_size() -> int:
 
 
 def seed_everything(seed) -> None:
-    if not seed:
-        return
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
+
+@contextlib.contextmanager
+def preserve_rng_state():
+    """
+    Restore the global RNG streams on exit, so that the wrapped code
+    has no effect on the random numbers drawn after it.
+    """
+    python_state = random.getstate()
+    numpy_state = np.random.get_state()
+    torch_state = torch.get_rng_state()
+    cuda_states = torch.cuda.get_rng_state_all()
+
+    try:
+        yield
+    finally:
+        random.setstate(python_state)
+        np.random.set_state(numpy_state)
+        torch.set_rng_state(torch_state)
+        torch.cuda.set_rng_state_all(cuda_states)
 
 def tensor_to_python_type(data):
     """

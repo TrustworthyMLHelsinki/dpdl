@@ -1,9 +1,11 @@
 import logging
+import random
 import re
 from collections import Counter
 from functools import partial
 
 import datasets
+import numpy as np
 import torch
 import torchvision
 from torch.utils.data import DistributedSampler
@@ -72,6 +74,14 @@ def strip_emojis(text: str) -> str:
     """
     return _EMOJI_RE.sub('', text)
 
+
+
+def _seed_worker(worker_id):
+    # torch seeds each worker from the dataloader
+    # we only need to seed numpy and random from it
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 
 class DistributedEvalSampler(torch.utils.data.Sampler):
@@ -564,16 +574,9 @@ class DataModule:
 
     def _set_generators_and_seed_worker(self):
         self.generator = torch.Generator()
-        if self.seed:
-            self.generator.manual_seed(self.seed)
+        self.generator.manual_seed(self.seed)
 
-        # each dataloader will get a different seed
-        def seed_worker(worker_id):
-            worker_seed = self.seed + worker_id
-            torch.manual_seed(worker_seed)
-            #log.info(f"Worker seed: {worker_seed}, rank: {torch.distributed.get_rank()}, gen state device: {self.generator.get_state().device}")
-
-        self.seed_worker = seed_worker if self.seed else None
+        self.seed_worker = _seed_worker
 
     def _create_dataloaders(self):
         # We might need initialize a DataModule without a batch size,
@@ -651,11 +654,11 @@ class DataModule:
         # for the DP case, Opacus handles distributed for us. otherwise, we need
         # to use distributedsampler and divide the batch size by number of replicas
         if not self.privacy:
-            log.warning("using non-shuffling eval sampler for train loader!")
-            #self.train_sampler = torch.utils.data.distributed.DistributedSampler(
-            #    self.train_dataset.with_format('torch'), shuffle=True
-            #)
-            self.train_sampler = DistributedEvalSampler(self.train_dataset.with_format('torch'))
+            # all ranks need the same sampler seed for sharding
+            self.train_sampler = torch.utils.data.distributed.DistributedSampler(
+                self.train_dataset.with_format('torch'),
+                seed=self.seed,
+            )
 
             # For distributed without Opacus, we need to divide the batch size
             # by the world size.

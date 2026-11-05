@@ -1,10 +1,13 @@
 import logging
 import pathlib
+import random
 import torch
 import typer
 
 from pydantic import BaseModel, root_validator
 from typing import Optional, List, Literal
+
+from .utils import is_global_zero
 
 log = logging.getLogger(__name__)
 
@@ -86,7 +89,7 @@ class Configuration(BaseModel):
     physical_batch_size: int = 40
     num_workers: int = 7
     validation_frequency: float = 1.0
-    seed: int = 0
+    seed: Optional[int] = None
     log_dir: str = 'logs'
     experiment_name: str = 'default'
     overwrite_experiment: bool = False
@@ -376,6 +379,27 @@ class ConfigurationManager:
 
     def get_command(self):
         return self.command
+
+    def resolve_seed(self):
+        """
+        Draw a random seed if none was given and record it in the configuration,
+        so that the run can be reproduced.
+        Rank 0 draws the seed and broadcasts it, so that the saved config is correct
+        """
+        if self.configuration.seed is not None:
+            return
+
+        seed = [random.SystemRandom().randrange(2**31) if is_global_zero() else None]
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.broadcast_object_list(seed, src=0)
+
+        self.configuration.seed = seed[0]
+
+        # clones (e.g. in train-predict) are built from the raw parameters
+        self._cli_params['seed'] = seed[0]
+
+        if is_global_zero():
+            log.info(f'No seed given, using randomly drawn seed {seed[0]}.')
 
     def disable_recording(self):
         """
