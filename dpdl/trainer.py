@@ -6,8 +6,12 @@ import os
 import random
 import re
 import shutil
+import random
+import re
+import shutil
 from collections.abc import Mapping
 
+import numpy as np
 import numpy as np
 import opacus
 import torch
@@ -17,10 +21,20 @@ from opacus.utils.batch_memory_manager import BatchMemoryManager
 
 from peft import PeftModel
 import wandb
+import wandb
 
+from .callbacks.base_callback import Callback
 from .callbacks.base_callback import Callback
 from .callbacks.callback_factory import CallbackFactory, CallbackHandler
 from .configurationmanager import Configuration, ConfigurationManager, Hyperparameters
+from .datamodules import (
+    DataModule,
+    DataModuleFactory,
+    DISEASE_EVAL_FIELDS,
+    normalize_disease_text,
+    strip_emojis,
+)
+#from .datamodules import DataModule, DataModuleFactory
 from .datamodules import (
     DataModule,
     DataModuleFactory,
@@ -170,14 +184,19 @@ class Trainer:
 
             self.fit_one_epoch(epoch)
 
+            if self.scheduler is not None:
+                self.scheduler.step()
+
             if self.validation_frequency and epoch % self.validation_frequency == 0:
                 self._run_validation(epoch)
 
     def _fit_total_steps(self):
-        step = 0
-        virtual_epoch = 0
-        steps_per_epoch = self._calculate_steps_per_epoch()
 
+        virtual_epoch = self.start_epoch
+        steps_per_epoch = self._calculate_steps_per_epoch()
+        step = self.last_completed_step
+
+        # NOTE: need to test that resume works properly with total steps
         # count full passes over the dataloader separately
         # virtual epochs do not always line up with them, but we still want to use all data and shuffle
         data_pass = 0
@@ -204,7 +223,7 @@ class Trainer:
                     virtual_epoch += 1
 
                     if self.validation_frequency and virtual_epoch % self.validation_frequency == 0:
-                        self.validate(virtual_epoch)
+                        self._run_validation(virtual_epoch)
 
                     # are we finished?
                     if step >= self.total_steps:
@@ -234,14 +253,22 @@ class Trainer:
         self.model.train()
         self.callback_handler.call('on_train_epoch_start', self, epoch)
 
+        #log.info(f"{self.datamodule.get_dataloader('train').sampler}")
+        #import sys
+        #sys.exit()
         self._set_sampler_epoch(epoch)
 
         for batch_idx, batch in enumerate(self.datamodule.get_dataloader('train')):
             self.callback_handler.call('on_train_batch_start', self, batch_idx, batch)
 
+            #log.info(f"rank{torch.distributed.get_rank()} \nbatch[0]: {batch[0]['input_ids'][0][:10]}\n batch[1]:{batch[1][1][-10:]}")
+
             logical_batch_loss = self.fit_one_batch(batch_idx, batch)
 
             self.callback_handler.call('on_train_batch_end', self, batch_idx, batch, logical_batch_loss)
+
+            log.warning("stopping training in trainer!")
+            break
 
         # compute the epoch metrics
         metrics = self._unwrap_model().train_metrics.compute()
@@ -290,7 +317,9 @@ class Trainer:
         return logical_batch_loss
 
     def validate(self, epoch=None, enable_callbacks=True):
-        return self._evaluate('validation', epoch, enable_callbacks)
+        # Checkpoints are written before validation and when restoring that random state is the one we want 
+        with preserve_rng_state():
+            return self._evaluate('validation', epoch, enable_callbacks)
 
     def test(self):
         return self._evaluate('test')
@@ -483,6 +512,9 @@ class Trainer:
 
 
     def load_training_state(self, checkpoints_dir: str, epochs: bool) -> bool:
+        # NOTE: check and fix this, should work for nonDP and DP both
+        # started fixing this for nonDP, haven't tried DP yet
+
         """Restore full training state from the latest checkpoint under
         checkpoints_dir. Returns True if a state was loaded, False if none found.
         Must be called AFTER setup() so optimizer / scheduler / privacy_engine
@@ -519,10 +551,9 @@ class Trainer:
         # rather: should pass load to the model, which should know how it's saved
         # self._load_adapter_weights_from_dir(ckpt_dir)
         log.info(f"rank {torch.distributed.get_rank()}: loading model weights")
-        self._unwrap_model().load_model(fpath=ckpt_dir, strict=True, map_location=str(self.device), allow_partial=True)
+        self._load_checkpoint_weights(ckpt_dir)
 
-        # The trainer is already set up, including its DP optimizer and privacy
-        # engine. Restore into those objects rather than wrapping them again.
+        # try loading optimizer separately, everyone uses rank0 state
         state_path = os.path.join(ckpt_dir, f'rank0_training_state.pt')
         state = torch.load(state_path, map_location='cpu', weights_only=False)
         self.optimizer.load_state_dict(state['optimizer_state'])
@@ -550,23 +581,15 @@ class Trainer:
                 f'to avoid corrupting DP accounting.'
             )
 
-        # The DP noise stream is separate from torch's global RNG. Older
-        # checkpoints do not contain it, so start an independent stream rather
-        # than replaying noise from the original run's seed.
-        noise_generator = getattr(self.optimizer, 'generator', None)
-        if noise_generator is not None:
-            noise_state = state.get('noise_generator_state')
-            if noise_state is not None:
-                noise_generator.set_state(noise_state)
-            else:
-                noise_generator.seed()
-                log.warning('Checkpoint has no DP noise RNG state; using a fresh noise stream. Exact replay is unavailable.')
-
         # Restore accountant history (drives get_epsilon), optimizer, scheduler.
         if state.get('accountant_state', None):
             self.privacy_engine.accountant.load_state_dict(state['accountant_state'])
         if self.scheduler is not None and state.get('scheduler_state') is not None:
             self.scheduler.load_state_dict(state['scheduler_state'])
+
+        # Must not fail silently like the RNGs below: replayed noise would break the DP accounting.
+        if state.get('noise_generator') is not None:
+            self.optimizer.generator.set_state(state['noise_generator'])
 
         # Restore RNG so Poisson sampling / dropout etc continue the same stream.
         try:
@@ -588,18 +611,37 @@ class Trainer:
         #'test_metrics': state['test_metrics'],
         # })
         #self.callback_handler = state['callback_handler']
-        
-        # Older epoch checkpoints saved start_epoch before advancing it. The
-        # checkpoint's global_epoch is the number of completed epochs.
-        self.start_step = int(state.get('global_step', state['start_step']))
-        self.start_epoch = int(state.get('global_epoch', state['start_epoch'])) if epochs else int(state['start_epoch'])
+        self.start_step = int(state['global_step'])
+        self.start_epoch = int(state['global_epoch'])
         for callback in self.callback_handler.callbacks:
             callback.set_step_epoch(step=self.start_step, epoch=self.start_epoch)
+
+        # The shuffling order depends on the seed, and a run without
+        # --seed has just drawn a new one. Keep using the original.
+        saved_seed = state.get('seed', self.seed)
+        if saved_seed != self.seed:
+            log.warning(f'Using the seed of the resumed checkpoint ({saved_seed}) instead of {self.seed}.')
+            self.seed = saved_seed
+        sampler = self.datamodule.get_dataloader('train').sampler
+        if isinstance(sampler, torch.utils.data.distributed.DistributedSampler):
+            sampler.seed = saved_seed
 
         if is_global_zero():
             log.info(f'Resumed from {ckpt_dir}: start_epoch={self.start_epoch}, start_step={self.start_step}')
         torch.distributed.barrier()
         return True
+
+    def _load_checkpoint_weights(self, ckpt_dir: str) -> None:
+        """Copy the checkpoint's weights into the existing model. The parameter objects
+        must stay the same, because the optimizer and DDP already hold references to them."""
+        model = self._unwrap_model()
+
+        if isinstance(model, PeftModel):
+            self._load_adapter_weights_from_dir(ckpt_dir)
+        elif hasattr(model.model, 'load_weights_in_place'):
+            model.model.load_weights_in_place(ckpt_dir)
+        else:
+            model.load_model(fpath=ckpt_dir, strict=True, map_location=str(self.device), allow_partial=True)
 
     def _load_adapter_weights_from_dir(self, ckpt_dir: str) -> None:
         """Inject LoRA adapter weights saved by trainer.save_model() (PEFT dir
@@ -613,10 +655,11 @@ class Trainer:
         elif os.path.exists(binp):
             sd = torch.load(binp, map_location='cpu', weights_only=True)
         else:
-            log.warning(f'No adapter weights found in {ckpt_dir}; keeping freshly-initialized weights.')
-            return
+            raise FileNotFoundError(f'No adapter weights found in {ckpt_dir}.')
         from peft import set_peft_model_state_dict
-        set_peft_model_state_dict(model, sd)
+        result = set_peft_model_state_dict(model, sd)
+        if result.unexpected_keys:
+            raise RuntimeError(f'Adapter weights in {ckpt_dir} do not match the model: {result.unexpected_keys[:5]}')
 
 class DifferentiallyPrivateTrainer(Trainer):
     def __init__(

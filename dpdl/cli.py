@@ -9,18 +9,22 @@ from pydantic import ValidationError
 from typing_extensions import Annotated
 from pathlib import Path
 import wandb
+import wandb
 
 from .configurationmanager import ConfigurationManager
 from .experimentmanager import (
     log_disease_confusion_matrix,
+    log_disease_confusion_matrix,
     log_dataset_sizes,
     log_final_epsilon,
+    log_per_disease_accuracy,
     log_per_disease_accuracy,
     log_noise_multiplier,
     log_parameter_counts,
     log_runtime,
     log_test_metrics,
     log_train_metrics,
+    save_per_sample_eval,
     save_per_sample_eval,
     start_experiment_logging,
 )
@@ -879,10 +883,17 @@ def run_train(config_manager: ConfigurationManager) -> Optional[Path]:
 
         if not config_manager.configuration.skip_test:
 
-        if rank_zero:
-            log_test_metrics(config_manager, test_metrics, test_loss)
-
+    # Keep the test split closed during hyperparameter selection when requested.
     if rank_zero:
+
+        log_per_disease_accuracy(config_manager, getattr(trainer, 'last_per_disease_accuracy', None))
+        log_disease_confusion_matrix(config_manager, getattr(trainer, 'last_disease_confusion', None))
+        per_sample_records = getattr(trainer, 'last_per_sample_eval', None)
+        if per_sample_records:
+            save_per_sample_eval(config_manager, per_sample_records, split='test')
+
+        if not config_manager.configuration.skip_test:
+            log_test_metrics(config_manager, test_metrics, test_loss)
         log_runtime(config_manager, start_time, end_time)
 
         # We need to have an option to disable this, as it might fail due to an OOM

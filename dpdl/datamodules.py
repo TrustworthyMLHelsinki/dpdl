@@ -1,13 +1,17 @@
 import logging
 import random
 import re
+import random
+import re
 from collections import Counter
 from functools import partial
 
 import datasets
 import numpy as np
+import numpy as np
 import torch
 import torchvision
+from torch.utils.data import DistributedSampler
 from torch.utils.data import DistributedSampler
 from PIL import Image
 
@@ -15,6 +19,73 @@ from .configurationmanager import Configuration, Hyperparameters
 from .utils import distributed_world_size
 
 log = logging.getLogger(__name__)
+
+# Fields in the sarus-tech/medical_v3 dataset that we evaluate for memorisation / utility.
+# 'disease' is the target label (utility); the rest are personal identifiers (PII leakage).
+DISEASE_EVAL_FIELDS = ['name', 'country', 'occupation', 'hobby', 'symptoms', 'treatment']
+
+_LEADING_ARTICLE_RE = re.compile(r'^\s*(the|a|an)\s+', re.IGNORECASE)
+
+def normalize_disease_text(name: str) -> str:
+    """Canonicalize a disease label.
+
+    Strips leading articles and surrounding whitespace so the same form is
+    used across training (the prepend in the collate), evaluation (substring
+    match + log-prob span), and the confusion matrix. Some labels in the
+    sarus-tech/medical_v3 dataset include "The" / "A" / "An" while the
+    narrative answer drops them, which would otherwise yield false-negative
+    substring matches and split-credit between two surface forms of the same
+    disease.
+    """
+    return _LEADING_ARTICLE_RE.sub('', name).strip()
+
+# Emoji ranges from the Unicode standard. Covers emoticons, pictographs,
+# transport/map symbols, supplemental pictographs (incl. recent additions),
+# misc symbols, dingbats, regional indicators (flags), zero-width joiner
+# (compound emojis), and variation selector / keycap combiners.
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F600-\U0001F64F"   # emoticons
+    "\U0001F300-\U0001F5FF"   # symbols & pictographs
+    "\U0001F680-\U0001F6FF"   # transport & map symbols
+    "\U0001F700-\U0001F77F"   # alchemical
+    "\U0001F780-\U0001F7FF"   # geometric shapes extended
+    "\U0001F800-\U0001F8FF"   # supplemental arrows-C
+    "\U0001F900-\U0001F9FF"   # supplemental symbols and pictographs
+    "\U0001FA00-\U0001FA6F"   # chess
+    "\U0001FA70-\U0001FAFF"   # symbols and pictographs extended-A
+    "\U00002600-\U000026FF"   # misc symbols
+    "\U00002700-\U000027BF"   # dingbats
+    "\U0001F1E6-\U0001F1FF"   # regional indicator (flags)
+    "‍"                  # zero-width joiner
+    "️"                  # variation selector-16 (emoji presentation)
+    "⃣"                  # combining enclosing keycap
+    "]+",
+    flags=re.UNICODE,
+)
+
+
+def strip_emojis(text: str) -> str:
+    """Remove emoji characters from `text`.
+
+    The fine-tuned model under DP noise tends to emit decorative emojis at the
+    start of its generation (a base-model prior amplified by gradient noise),
+    sometimes immediately preceding the disease name. Substring search still
+    finds the disease either way, but stripping emojis up-front makes the
+    behaviour explicit, prevents subtle edge cases where an emoji might fuse
+    with the disease in the decoded text, and produces cleaner per-disease
+    breakdowns when the predicted text is logged.
+    """
+    return _EMOJI_RE.sub('', text)
+
+
+
+def _seed_worker(worker_id):
+    # torch seeds each worker from the dataloader
+    # we only need to seed numpy and random from it
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
 
 # Fields in the sarus-tech/medical_v3 dataset that we evaluate for memorisation / utility.
 # 'disease' is the target label (utility); the rest are personal identifiers (PII leakage).

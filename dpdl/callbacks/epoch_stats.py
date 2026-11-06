@@ -4,6 +4,7 @@ import math
 import torch
 import torchmetrics
 import wandb
+import wandb
 
 from ..utils import tensor_to_python_type
 from .base_callback import Callback
@@ -19,6 +20,10 @@ class RecordEpochStatsCallback(Callback):
 
         device = device or torch.device('cuda')
         self.train_loss = torchmetrics.aggregation.MeanMetric().to(device)
+        # should evaluate here? is this only for disease?
+        self.evaluation_loss = torchmetrics.aggregation.MeanMetric(
+            sync_on_compute=False
+        ).to(device)
 
         # Do not log these metrics
         self._metrics_to_ignore = [
@@ -69,9 +74,9 @@ class RecordEpochStatsCallback(Callback):
     def on_train_batch_end(self, trainer, batch_idx, batch, loss):
         self.train_loss.update(loss)
 
-    def on_validation_epoch_end(self, trainer, epoch, metrics):
-        loss = self.evaluation_loss.compute()
-        self.evaluation_loss.reset()
+    def on_validation_epoch_end(self, trainer, epoch, metrics, loss):
+        # NOTE: losses now passed in call, check and fix all!
+        # ALSO: removed on batch end callbacks?
         if self._is_global_zero():
             if trainer.wandb_logging and metrics:
                 wandb.log(
