@@ -35,7 +35,7 @@ from .metrics_factory import MetricsFactory
 from .models.model_base import ModelBase
 from .models.model_factory import ModelFactory
 from .optimizers import OptimizerFactory
-from .utils import is_global_zero, seed_everything, shift_and_flatten
+from .utils import is_global_zero, preserve_rng_state, seed_everything, shift_and_flatten
 
 log = logging.getLogger(__name__)
 
@@ -174,12 +174,14 @@ class Trainer:
                 self._run_validation(epoch)
 
     def _fit_total_steps(self):
-
-        virtual_epoch = self.start_epoch
+        step = 0
+        virtual_epoch = 0
         steps_per_epoch = self._calculate_steps_per_epoch()
-        step = self.last_completed_step
 
-        # NOTE: need to test that resume works properly with total steps
+        # count full passes over the dataloader separately
+        # virtual epochs do not always line up with them, but we still want to use all data and shuffle
+        data_pass = 0
+
         # start the first virtual epoch
         self._handle_virtual_epoch_start(virtual_epoch)
 
@@ -202,7 +204,7 @@ class Trainer:
                     virtual_epoch += 1
 
                     if self.validation_frequency and virtual_epoch % self.validation_frequency == 0:
-                        self._run_validation(virtual_epoch)
+                        self.validate(virtual_epoch)
 
                     # are we finished?
                     if step >= self.total_steps:
@@ -232,21 +234,14 @@ class Trainer:
         self.model.train()
         self.callback_handler.call('on_train_epoch_start', self, epoch)
 
-        #log.info(f"{self.datamodule.get_dataloader('train').sampler}")
-        #import sys
-        #sys.exit()
+        self._set_sampler_epoch(epoch)
 
         for batch_idx, batch in enumerate(self.datamodule.get_dataloader('train')):
             self.callback_handler.call('on_train_batch_start', self, batch_idx, batch)
 
-            #log.info(f"rank{torch.distributed.get_rank()} \nbatch[0]: {batch[0]['input_ids'][0][:10]}\n batch[1]:{batch[1][1][-10:]}")
-
             logical_batch_loss = self.fit_one_batch(batch_idx, batch)
 
             self.callback_handler.call('on_train_batch_end', self, batch_idx, batch, logical_batch_loss)
-
-            log.warning("stopping training in trainer!")
-            break
 
         # compute the epoch metrics
         metrics = self._unwrap_model().train_metrics.compute()

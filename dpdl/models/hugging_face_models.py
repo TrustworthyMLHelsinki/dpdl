@@ -271,16 +271,31 @@ class HuggingfaceLanguageModel(torch.nn.Module):
         if not os.path.isdir(fpath):
             raise FileNotFoundError(f'Cannot load Huggingface model from disk: checkpoint {fpath} missing')
 
+        model_from_disk = self._load_from_disk(fpath)
+
+        try:
+            device = next(self.model.parameters()).device
+        except StopIteration as exc:
+            raise RuntimeError('Cannot resolve device from Huggingface model parameters.') from exc
+
+        model_from_disk = model_from_disk.to(device)
+
+        self.model = model_from_disk
+
+    def load_weights_in_place(self, fpath: str) -> None:
+        """
+        Copy weights from disk into the existing model, instead of replacing it like `load_model`.
+        Needed when resuming training, as the optimizer holds references to the existing parameters.
+        """
+        self.model.load_state_dict(self._load_from_disk(fpath).state_dict())
+
+    def _load_from_disk(self, fpath: str):
         if self.task == "SequenceClassification":
             model_cls = AutoModelForSequenceClassification
         else:
             model_cls = AutoModelForCausalLM
 
-        model_from_disk = model_cls.from_pretrained(
+        return model_cls.from_pretrained(
             fpath,
             dtype=torch.float32, # NB: No quantization support!
         )
-
-        # Keep the existing Parameter objects: the trainer's
-        # optimizer already holds references to them when resuming training.
-        self.model.load_state_dict(model_from_disk.state_dict(), strict=True)
