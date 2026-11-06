@@ -1068,8 +1068,11 @@ class TrainerFactory:
         """
         Compute the number of training epochs and total optimizer steps.
 
-        If `use_steps=True`, we convert epochs to total_steps using ceil(N / B),
-        which matches the default logic in Opacus:
+        If `--total-steps` is given, we step for exactly that many optimizer
+        updates (`use_steps` is not required for this).
+
+        If `use_steps=True` together with `--epochs`, we convert epochs to
+        total_steps using ceil(N / B), which matches the default logic in Opacus:
             - sample_rate = 1 / ceil(N / B)
             - steps = int(1 / sample_rate) = ceil(N / B)
 
@@ -1094,8 +1097,9 @@ class TrainerFactory:
             total_steps = steps_per_epoch * hyperparams.epochs
             epochs = None
 
-        # If total steps are manually specified in config
-        elif configuration.use_steps and hyperparams.total_steps:
+        # If total steps are manually specified, step for exactly that amount
+        # regardless of `use_steps` (which only governs the epochs->steps conversion above).
+        elif hyperparams.total_steps:
             total_steps = hyperparams.total_steps
             epochs = None
 

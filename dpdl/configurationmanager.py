@@ -45,7 +45,7 @@ class Hyperparameters(BaseModel):
 
         if epochs is None and total_steps is None:
             raise ValueError(
-                'Missing training length: set `--epochs` or use `--use-steps` with `--total-steps`.'
+                'Missing training length: set `--epochs` or `--total-steps`.'
             )
 
         return values
@@ -181,14 +181,10 @@ class Configuration(BaseModel):
     @root_validator(pre=True)
     def check_total_steps(cls, values):
         total_steps = values.get('total_steps')
-        use_steps = values.get('use_steps')
         epochs = values.get('epochs')
 
         if total_steps and epochs:
             raise ValueError('Parameters "epochs" and "total_steps" are exclusive.')
-
-        if total_steps and not use_steps:
-            raise ValueError('Parameter "total_steps" requires also "use_steps".')
 
         return values
 

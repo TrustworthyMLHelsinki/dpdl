@@ -74,7 +74,7 @@ The entry point is [run.py](run.py) (also installed as the `dpdl` CLI).
 
 ### Example usage
 
-At minimum, specify `--epochs` (or `--use-steps` with `--total-steps`).
+At minimum, specify `--epochs` (or `--total-steps`).
 
 A real-world example (CIFAR-10 + ViT tiny). This will download data and weights:
 
