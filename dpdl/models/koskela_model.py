@@ -69,5 +69,5 @@ class KoskelaNet(nn.Module):
         ])
 
     def save_model(self, fpath):
-        torch.save(self.model.state_dict(), fpath)
+        torch.save(self.state_dict(), fpath)
 

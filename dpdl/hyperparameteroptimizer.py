@@ -8,6 +8,7 @@ import yaml
 import math
 
 from functools import partial
+from pathlib import Path
 
 from .trainer import TrainerFactory
 from .device import resolve_device
@@ -282,11 +283,15 @@ class HyperparameterOptimizer:
             log_noise_multiplier(config_manager, trainer)
 
             # save model if requested
-            if save_model := config_manager.configuration.save_model:
-                if model_weights_path in config_manager.configuration:
-                    save_path = config_manager.configuration.model_weights_path
+            if config_manager.configuration.save_model:
+                if config_manager.configuration.model_weights_path:
+                    save_path = Path(config_manager.configuration.model_weights_path)
                 else:
-                    save_path = Path(config_manager.configuration.log_dir, config_manager.configuration.experiment_name, 'final_model.pt')
+                    save_path = Path(
+                        config_manager.configuration.log_dir,
+                        config_manager.configuration.experiment_name,
+                        'final_model.pt',
+                    )
                 log.info(f'Saving final model after HPO to "{save_path}"...')
                 trainer.save_model(save_path)
 

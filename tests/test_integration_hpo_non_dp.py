@@ -62,6 +62,7 @@ def test_integration_hpo_non_dp(tmp_path: Path, image_dataset_path: Path) -> Non
         'hpo-non-dp',
         '--optuna-journal',
         str(tmp_path / 'optuna-non-dp.journal'),
+        '--save-model',
     ]
 
     run_distributed(cmd_args, env, repo_root)
@@ -98,6 +99,9 @@ def test_integration_hpo_non_dp(tmp_path: Path, image_dataset_path: Path) -> Non
 
     expected_params = get_expected_hpo_params('hpo_non_dp_trial0')
     assert_best_params(tmp_path / 'hpo-non-dp', expected_params=expected_params)
-    assert_files_exist(tmp_path / 'hpo-non-dp', ('best-value', 'best-params.json', 'final-metrics'))
+    assert_files_exist(
+        tmp_path / 'hpo-non-dp',
+        ('best-value', 'best-params.json', 'final-metrics', 'final_model.pt'),
+    )
 
     assert_runtime(tmp_path / 'hpo-non-dp')
