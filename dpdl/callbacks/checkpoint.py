@@ -190,6 +190,10 @@ class CheckpointCallback(Callback):
                 # 'model_state_dict': trainer._unwrap_model().state_dict(),
                 # should be enough to only save most of these on rank0, saving on all ranks only for debugging
                 'optimizer_state': trainer.optimizer.state_dict(),
+                'noise_generator_state': (
+                    trainer.optimizer.generator.get_state()
+                    if getattr(trainer.optimizer, 'generator', None) is not None else None
+                ),
                 'noise_multiplier': float(getattr(trainer.optimizer, 'noise_multiplier', 0.0)),
                 'scheduler_state': trainer.scheduler.state_dict() if trainer.scheduler is not None else None,
                 # reproducibility currently doesn't seem to require saving these, need to check if something can break without saving

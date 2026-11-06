@@ -281,11 +281,6 @@ class HuggingfaceLanguageModel(torch.nn.Module):
             dtype=torch.float32, # NB: No quantization support!
         )
 
-        try:
-            device = next(self.model.parameters()).device
-        except StopIteration as exc:
-            raise RuntimeError('Cannot resolve device from Huggingface model parameters.') from exc
-
-        model_from_disk = model_from_disk.to(device)
-
-        self.model = model_from_disk
+        # Keep the existing Parameter objects: the trainer's
+        # optimizer already holds references to them when resuming training.
+        self.model.load_state_dict(model_from_disk.state_dict(), strict=True)

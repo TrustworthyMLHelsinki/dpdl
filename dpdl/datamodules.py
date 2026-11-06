@@ -1,4 +1,5 @@
 import logging
+import random
 import re
 from collections import Counter
 from functools import partial
@@ -407,6 +408,54 @@ class DataModule:
         if torch.distributed.get_rank() == 0:
             log.info(f'Determined the output dimension to be {self.output_dim}.')
 
+    def _split_disease_holdout(self, holdout):
+        """Divide the disease holdout into validation and test sets.
+
+        Diseases with at least two holdout samples are split by disease.
+        Each disease with one holdout sample goes to either validation or test,
+        chosen reproducibly with split_seed. The final sets keep the requested sizes.
+        """
+        labels = holdout[self._label_field]
+        counts = Counter(labels)
+        singleton_indices = [i for i, label in enumerate(labels) if counts[label] == 1]
+        if not singleton_indices:
+            return tuple(holdout.train_test_split(
+                test_size=self.test_size / (self.test_size + self.val_size),
+                seed=self.split_seed,
+                shuffle=True,
+                stratify_by_column=self._label_field,
+            ).values())
+
+        test_target = round(len(holdout) * self.test_size / (self.test_size + self.val_size))
+        common_indices = [i for i, label in enumerate(labels) if counts[label] > 1]
+        singleton_test_count = round(len(singleton_indices) * test_target / len(holdout))
+        # Place roughly the same fraction of singleton rows in test as other rows.
+        singleton_test_count = min(
+            len(singleton_indices), test_target, max(0, singleton_test_count)
+        )
+        common_test_count = test_target - singleton_test_count
+
+        rng = random.Random(self.split_seed)
+        rng.shuffle(singleton_indices)
+        test_singletons = holdout.select(singleton_indices[:singleton_test_count])
+        val_singletons = holdout.select(singleton_indices[singleton_test_count:])
+        if not common_indices:
+            return val_singletons, test_singletons
+        if not 0 < common_test_count < len(common_indices):
+            raise ValueError('Not enough repeat disease rows for a stratified validation/test split.')
+
+        common = holdout.select(common_indices)
+        val_common, test_common = common.train_test_split(
+            test_size=common_test_count,
+            seed=self.split_seed,
+            shuffle=True,
+            stratify_by_column=self._label_field,
+        ).values()
+        return (
+            datasets.concatenate_datasets([val_common, val_singletons]),
+            datasets.concatenate_datasets([test_common, test_singletons]),
+        )
+
     def _create_dataset_splits(self):
         # Check if there's a validation split available
         has_validation_split = 'validation' in self._dataset_splits
@@ -433,21 +482,27 @@ class DataModule:
                     stratify_by_column=self._label_field,
                 ).values()
 
-                # Rare classes (<2 samples) can make a stratified 50/50 split
-                # impossible; fall back to an unstratified split in that case.
-                try:
-                    self.val_dataset, self.test_dataset = val_and_test_split.train_test_split(
-                        test_size=0.5,
-                        seed=self.split_seed,
-                        shuffle=True,
-                        stratify_by_column=self._label_field,
-                    ).values()
-                except ValueError:
-                    self.val_dataset, self.test_dataset = val_and_test_split.train_test_split(
-                        test_size=0.5,
-                        seed=self.seed,
-                        shuffle=True,
-                    ).values()
+                # Diseases with multiple holdout samples remain stratified, and
+                # a disease with one holdout sample goes to one evaluation set using split_seed. 
+                if getattr(self, 'task', None) == 'DiseaseTask':
+                    self.val_dataset, self.test_dataset = self._split_disease_holdout(
+                        val_and_test_split
+                    )
+                else:
+                    # Preserve the existing fallback for other tasks.
+                    try:
+                        self.val_dataset, self.test_dataset = val_and_test_split.train_test_split(
+                            test_size=0.5,
+                            seed=self.split_seed,
+                            shuffle=True,
+                            stratify_by_column=self._label_field,
+                        ).values()
+                    except ValueError:
+                        self.val_dataset, self.test_dataset = val_and_test_split.train_test_split(
+                            test_size=0.5,
+                            seed=self.split_seed,
+                            shuffle=True,
+                        ).values()
 
             # We have only test split, create validation split from train
             if not has_validation_split and has_test_split:
@@ -477,20 +532,20 @@ class DataModule:
             if not has_validation_split and not has_test_split:
                 self.train_dataset, val_and_test_split = self._dataset_splits['train'].train_test_split(
                     test_size=(self.test_size + self.val_size),
-                    seed=self.seed,
+                    seed=self.split_seed,
                     shuffle=True,
                 ).values()
 
                 self.val_dataset, self.test_dataset = val_and_test_split.train_test_split(
                     test_size=0.5,
-                    seed=self.seed,
+                    seed=self.split_seed,
                     shuffle=True,
                 ).values()
 
             if not has_validation_split and has_test_split:
                 self.train_dataset, self.val_dataset = self._dataset_splits['train'].train_test_split(
                     test_size=self.test_size,
-                    seed=self.seed,
+                    seed=self.split_seed,
                     shuffle=True,
                 ).values()
 
@@ -501,7 +556,7 @@ class DataModule:
 
                 self.val_dataset, self.test_dataset = self._dataset_splits['validation'].train_test_split(
                     test_size=0.5,
-                    seed=self.seed,
+                    seed=self.split_seed,
                     shuffle=True,
                 ).values()
 

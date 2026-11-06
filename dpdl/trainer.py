@@ -170,9 +170,6 @@ class Trainer:
 
             self.fit_one_epoch(epoch)
 
-            if self.scheduler is not None:
-                self.scheduler.step()
-
             if self.validation_frequency and epoch % self.validation_frequency == 0:
                 self._run_validation(epoch)
 
@@ -292,6 +289,8 @@ class Trainer:
 
         # after accumulating the gradients for all the sub batches we can finally update weights.
         self.optimizer.step()
+        if self.scheduler is not None:
+            self.scheduler.step()
 
         return logical_batch_loss
 
@@ -489,9 +488,6 @@ class Trainer:
 
 
     def load_training_state(self, checkpoints_dir: str, epochs: bool) -> bool:
-        # NOTE: check and fix this, should work for nonDP and DP both
-        # started fixing this for nonDP, haven't tried DP yet
-
         """Restore full training state from the latest checkpoint under
         checkpoints_dir. Returns True if a state was loaded, False if none found.
         Must be called AFTER setup() so optimizer / scheduler / privacy_engine
@@ -530,7 +526,8 @@ class Trainer:
         log.info(f"rank {torch.distributed.get_rank()}: loading model weights")
         self._unwrap_model().load_model(fpath=ckpt_dir, strict=True, map_location=str(self.device), allow_partial=True)
 
-        # try loading optimizer separately, everyone uses rank0 state
+        # The trainer is already set up, including its DP optimizer and privacy
+        # engine. Restore into those objects rather than wrapping them again.
         state_path = os.path.join(ckpt_dir, f'rank0_training_state.pt')
         state = torch.load(state_path, map_location='cpu', weights_only=False)
         self.optimizer.load_state_dict(state['optimizer_state'])
@@ -538,9 +535,6 @@ class Trainer:
             for k, v in opt_state.items():
                 if isinstance(v, torch.Tensor):
                     opt_state[k] = v.to(self.device)
-
-        # wrap model with DDP
-        self.setup()
 
         log.info(f"rank{torch.distributed.get_rank()} optimizer state loaded")
 
@@ -560,6 +554,18 @@ class Trainer:
                 f'sample-rate config must be IDENTICAL to the original run. Aborting '
                 f'to avoid corrupting DP accounting.'
             )
+
+        # The DP noise stream is separate from torch's global RNG. Older
+        # checkpoints do not contain it, so start an independent stream rather
+        # than replaying noise from the original run's seed.
+        noise_generator = getattr(self.optimizer, 'generator', None)
+        if noise_generator is not None:
+            noise_state = state.get('noise_generator_state')
+            if noise_state is not None:
+                noise_generator.set_state(noise_state)
+            else:
+                noise_generator.seed()
+                log.warning('Checkpoint has no DP noise RNG state; using a fresh noise stream. Exact replay is unavailable.')
 
         # Restore accountant history (drives get_epsilon), optimizer, scheduler.
         if state.get('accountant_state', None):
@@ -587,10 +593,13 @@ class Trainer:
         #'test_metrics': state['test_metrics'],
         # })
         #self.callback_handler = state['callback_handler']
+        
+        # Older epoch checkpoints saved start_epoch before advancing it. The
+        # checkpoint's global_epoch is the number of completed epochs.
+        self.start_step = int(state.get('global_step', state['start_step']))
+        self.start_epoch = int(state.get('global_epoch', state['start_epoch'])) if epochs else int(state['start_epoch'])
         for callback in self.callback_handler.callbacks:
-            callback.set_step_epoch(step=int(state['start_step']), epoch=int(state['start_epoch']))
-        self.start_step = int(state['start_step'])
-        self.start_epoch = int(state['start_epoch'])
+            callback.set_step_epoch(step=self.start_step, epoch=self.start_epoch)
 
         if is_global_zero():
             log.info(f'Resumed from {ckpt_dir}: start_epoch={self.start_epoch}, start_step={self.start_step}')
@@ -858,6 +867,8 @@ class DifferentiallyPrivateTrainer(Trainer):
         loss.backward()
 
         self.optimizer.step()
+        if self.scheduler is not None and not self.optimizer._is_last_step_skipped:
+            self.scheduler.step()
 
         loss = loss.item()
 
@@ -1803,6 +1814,10 @@ class TrainerFactory:
         )
 
         epochs, total_steps = TrainerFactory._get_epochs_and_steps(configuration, hyperparams, datamodule)
+        scheduler_factory = (
+            OptimizerFactory.get_scheduler_factory(configuration, hyperparams, datamodule, total_steps)
+            if configuration.lr_scheduler_type is not None else None
+        )
 
         adapter = TrainerFactory._make_adapter(configuration, device, datamodule)
 
@@ -1821,6 +1836,7 @@ class TrainerFactory:
             peft=configuration.peft,
             task=configuration.task,
             device=device,
+            scheduler_factory=scheduler_factory,
             wandb_logging=configuration.wandb_logging,
         )
 
@@ -1896,6 +1912,10 @@ class TrainerFactory:
 
         target_delta, target_epsilon = _get_target_privacy_params(hyperparams)
         epochs, total_steps = TrainerFactory._get_epochs_and_steps(configuration, hyperparams, datamodule)
+        scheduler_factory = (
+            OptimizerFactory.get_scheduler_factory(configuration, hyperparams, datamodule, total_steps)
+            if configuration.lr_scheduler_type is not None else None
+        )
 
         adapter = TrainerFactory._make_adapter(configuration, device, datamodule)
 
@@ -1925,6 +1945,7 @@ class TrainerFactory:
             peft=configuration.peft,
             task=configuration.task,
             device=device,
+            scheduler_factory=scheduler_factory,
             wandb_logging=configuration.wandb_logging,
         )
 
