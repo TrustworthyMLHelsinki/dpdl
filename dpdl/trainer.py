@@ -99,10 +99,17 @@ class Trainer:
         virtual_epoch = 0
         steps_per_epoch = self._calculate_steps_per_epoch()
 
+        # count full passes over the dataloader separately
+        # virtual epochs do not always line up with them, but we still want to use all data and shuffle
+        data_pass = 0
+
         # start the first virtual epoch
         self._handle_virtual_epoch_start(virtual_epoch)
 
         while step < self.total_steps:
+            self._set_sampler_epoch(data_pass)
+            data_pass += 1
+
             for batch_idx, batch in enumerate(self.datamodule.get_dataloader('train')):
                 if step >= self.total_steps:
                     break
@@ -148,6 +155,8 @@ class Trainer:
         self.model.train()
         self.callback_handler.call('on_train_epoch_start', self, epoch)
 
+        self._set_sampler_epoch(epoch)
+
         for batch_idx, batch in enumerate(self.datamodule.get_dataloader('train')):
             self.callback_handler.call('on_train_batch_start', self, batch_idx, batch)
 
@@ -182,7 +191,9 @@ class Trainer:
         for i, physical_batch in enumerate(physical_batches):
             self.callback_handler.call('on_train_physical_batch_start', self, i, physical_batch)
 
-            forward_output = self.adapter.forward(self._unwrap_model(), physical_batch)
+            # don't unwrap here so that gradients are still synced through DDP
+            forward_output = self.adapter.forward(self.model, physical_batch)
+
             loss = self.adapter.compute_loss(self._unwrap_model(), physical_batch, forward_output, normalize_by=N)
             self.adapter.update_metrics(self._unwrap_model(), physical_batch, forward_output)
             loss.backward()
@@ -214,11 +225,34 @@ class Trainer:
 
         return count_parameters(self._unwrap_model())
 
+    def _set_sampler_epoch(self, epoch):
+        # DistributedSampler only reshuffles if told the epoch, so we have to call this every time
+        sampler = self.datamodule.get_dataloader('train').sampler
+        if isinstance(sampler, torch.utils.data.distributed.DistributedSampler):
+            sampler.set_epoch(epoch)
+
+    def _sync_ddp_buffers(self):
+        # only sync if we are using DDP and distributed computation
+        if (
+            not isinstance(self.model, torch.nn.parallel.DistributedDataParallel)
+            or not torch.distributed.is_available()
+            or not torch.distributed.is_initialized()
+            or torch.distributed.get_world_size() == 1
+        ):
+            return
+
+        with torch.no_grad():
+            for buffer in self.model.module.buffers():
+                torch.distributed.broadcast(buffer, src=0)
+
     def _evaluate(self, mode, epoch=None, enable_callbacks=True):
         if enable_callbacks and is_global_zero():
             self.callback_handler.call(f'on_{mode}_epoch_start', self, epoch)
 
         self.model.eval()
+
+        # sync buffers (i.e. BatchNorm) across ranks before evaluation to have reproducible results
+        self._sync_ddp_buffers()
         torch.set_grad_enabled(False)
 
         # record the loss separately, as we need to return it when
