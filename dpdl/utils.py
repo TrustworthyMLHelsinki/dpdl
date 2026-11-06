@@ -23,9 +23,6 @@ def distributed_world_size() -> int:
 
 
 def seed_everything(seed) -> None:
-    if not seed:
-        return
-
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)

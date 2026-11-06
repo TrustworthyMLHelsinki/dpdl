@@ -140,12 +140,12 @@ def cli(
             )
         ] = 1.0,
         seed: Annotated[
-            int,
+            Optional[int],
             typer.Option(
-                help='Random seed',
+                help='Random seed (drawn at random and recorded if not given)',
                 rich_help_panel='Training options',
             )
-        ] = 0,
+        ] = None,
         privacy: Annotated[
             bool,
             typer.Option(
@@ -669,6 +669,9 @@ def cli(
         raise typer.BadParameter(_format_validation_error(exc))
     except ValueError as exc:
         raise typer.BadParameter(str(exc))
+
+    # Draw a seed if none was given, so every run can be reproduced from its configuration
+    config_manager.resolve_seed()
 
     command = config_manager.get_command()
 

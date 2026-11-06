@@ -496,8 +496,7 @@ class DifferentiallyPrivateTrainer(Trainer):
 
     def setup(self):
         noise_generator = torch.Generator(device=self.device)
-        if self.seed:
-            noise_generator.manual_seed(self.seed)
+        noise_generator.manual_seed(self.seed)
 
         self.model = self.model.to(self.device)
 
