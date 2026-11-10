@@ -1248,11 +1248,12 @@ class DifferentiallyPrivateTrainer(Trainer):
             mechanism_kwargs=mechanism_kwargs,
         )
 
-        noise_generator = torch.Generator(device=self.device)
+        self.model = self.model.to(self.device)
+
+        # Here we need to use the model's actual device, not just `self.device`
+        noise_generator = torch.Generator(device=next(self.model.parameters()).device)
         if self.seed:
             noise_generator.manual_seed(self.seed)
-
-        self.model = self.model.to(self.device)
 
         # let's be distributed by default and wrap the model for Opacus DDP.
         # DifferentiallyPrivateDistributedDataParallel is actually a no-op in Opacus, but
