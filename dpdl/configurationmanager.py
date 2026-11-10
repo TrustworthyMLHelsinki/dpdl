@@ -627,6 +627,9 @@ class Configuration(BaseModel):
     test_size: Optional[float] = 0.1
     save_model: Optional[bool] = False
     model_weights_path: Optional[str] = None
+    record_memory_usage: bool = False
+    record_training_time: bool = False
+    noise_history_mode: Optional[Literal['regenerate', 'stored']] = None
     record_clipping: Optional[bool] = False
     record_snr: Optional[bool] = False
     record_llm_samples: Optional[bool] = False
@@ -647,6 +650,12 @@ class Configuration(BaseModel):
     load_in_4bit: bool = False
 
     model_config = ConfigDict(protected_namespaces=())
+
+    @model_validator(mode="after")
+    def check_resource_options(self):
+        if self.noise_history_mode is not None and self.noise_mechanism not in ('bisr', 'bandinvmf', 'bifr'):
+            raise ValueError('noise history selection requires an inverse family')
+        return self
 
     @model_validator(mode="before")
     @classmethod

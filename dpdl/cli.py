@@ -424,6 +424,26 @@ def cli(
                 rich_help_panel='Logging options',
             )
         ] = False,
+        record_memory_usage: Annotated[
+            bool,
+            typer.Option(
+                help='Record GPU memory usage peaks.',
+                rich_help_panel='Logging options',
+            )
+        ] = False,
+        record_training_time: Annotated[
+            bool,
+            typer.Option(
+                help='Record epoch duration and mean time per logical optimizer step.',
+                rich_help_panel='Logging options',
+            )
+        ] = False,
+        noise_history_mode: Annotated[
+		Optional[str],
+		typer.Option(
+			help="Inverse-noise history: regenerate (default) or stored."
+		)
+	] = None,
         record_snr: Annotated[
             Optional[bool],
             typer.Option(
@@ -894,6 +914,8 @@ def run_train_and_predict(config_manager: ConfigurationManager) -> None:
         command='predict',
         model_weights_path=str(saved_model_path),
         privacy=False,  # We of course predict without Opacus.
+        record_memory_usage=False,
+        record_training_time=False,
         num_workers=0,  # Avoid reusing workers, we don't need many for this.
     )
     run_predict(predict_config_manager)

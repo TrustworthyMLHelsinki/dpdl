@@ -575,6 +575,7 @@ class DifferentiallyPrivateTrainer(Trainer):
         poisson_sampling: bool = True,
         normalize_clipping: bool = False,
         noise_mechanism: str = 'gaussian',
+        noise_history_mode: str | None = None,
         sampling_mode: str | None = None,
         bsr_coeffs: list[float] | None = None,
         bsr_z_std: float | None = None,
@@ -615,6 +616,7 @@ class DifferentiallyPrivateTrainer(Trainer):
         self.poisson_sampling = poisson_sampling
         self.normalize_clipping = normalize_clipping
         self.accountant = accountant
+        self.noise_history_mode = noise_history_mode
         self.noise_mechanism = noise_mechanism
         self.sampling_mode = sampling_mode
         self.bsr_coeffs = bsr_coeffs
@@ -954,6 +956,8 @@ class DifferentiallyPrivateTrainer(Trainer):
 
             # `coeffs` encode Toeplitz factor coefficients; `z_std` is correlated Gaussian stddev.
             mechanism_state = {}
+            if self.noise_history_mode is not None:
+                mechanism_state['noise_history_mode'] = self.noise_history_mode
             if self.bsr_coeffs:
                 mechanism_state['coeffs'] = list(self.bsr_coeffs)
 
@@ -1934,6 +1938,7 @@ class TrainerFactory:
             poisson_sampling=configuration.poisson_sampling,
             normalize_clipping=configuration.normalize_clipping,
             noise_mechanism=configuration.noise_mechanism,
+            noise_history_mode=configuration.noise_history_mode,
             sampling_mode=configuration.sampling_mode,
             bsr_coeffs=configuration.bsr_coeffs,
             bsr_z_std=configuration.bsr_z_std,

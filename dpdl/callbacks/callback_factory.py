@@ -20,6 +20,7 @@ from .per_class_accuracy import RecordPerClassAccuracyCallback
 from .record_losses import RecordLossesByEpochCallback, RecordTrainLossByStepCallback
 from .record_accuracy import RecordAccuracyByEpochCallback
 from .record_snr import RecordSNRCallback
+from .resource_stats import RecordResourceStatsCallback
 from .llm_sampling import LLMSamplingCallback
 
 log = logging.getLogger(__name__)
@@ -47,9 +48,23 @@ class CallbackFactory:
         experiment_name = configuration.experiment_name
         full_log_dir = pathlib.Path(f'{log_dir}/{experiment_name}')
 
-        callbacks = [
-            RecordEpochStatsCallback(use_steps=configuration.use_steps, device=device),
-        ]
+        callbacks = []
+
+        if configuration.record_memory_usage or configuration.record_training_time:
+            callbacks.append(
+                RecordResourceStatsCallback(
+                    device=device,
+                    output_dir=full_log_dir,
+                    configuration=configuration,
+                    hyperparams=hyperparams,
+                    record_memory_usage=configuration.record_memory_usage,
+                    record_training_time=configuration.record_training_time,
+                )
+            )
+
+        callbacks.append(
+            RecordEpochStatsCallback(use_steps=configuration.use_steps, device=device)
+        )
 
         if configuration.record_gradient_norms:
             max_grad_norm = hyperparams.max_grad_norm
