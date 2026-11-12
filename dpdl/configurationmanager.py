@@ -617,6 +617,7 @@ class Configuration(BaseModel):
     cache_features: Optional[bool] = False
     use_steps: Optional[bool] = False
     evaluation_mode: Optional[bool] = False
+    skip_test: Optional[bool] = False
     dataset_label_field: Optional[str] = None
     dataset_text_fields: Optional[List[str]] = None
     max_test_examples: Optional[int] = None
@@ -871,6 +872,7 @@ class Configuration(BaseModel):
             ('Physical batch size', self.physical_batch_size),
             ('Num workers', self.num_workers),
             ('Validation frequency', self.validation_frequency),
+            ('Skip test evaluation', self.skip_test),
             ('Seed', self.seed),
             ('Log dir', self.log_dir),
             ('Experiment name', self.experiment_name),

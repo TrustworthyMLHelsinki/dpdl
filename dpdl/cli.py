@@ -192,6 +192,13 @@ def cli(
                 rich_help_panel='Training options',
             )
         ] = None,
+        skip_test: Annotated[
+            bool,
+            typer.Option(
+                help='Do not evaluate the test split after training',
+                rich_help_panel='Training options',
+            )
+        ] = False,
         prediction_save_gradient_data: Annotated[
             Optional[bool],
             typer.Option(
@@ -829,10 +836,11 @@ def run_train(config_manager: ConfigurationManager) -> Optional[Path]:
 
     # log test accuracy and run time, and save model if asked
     if rank_zero:
-        log.info('Evaluating on test set..')
-        test_loss, test_metrics = trainer.test()
+        if not config_manager.configuration.skip_test:
+            log.info('Evaluating on test set..')
+            test_loss, test_metrics = trainer.test()
 
-        log_test_metrics(config_manager, test_metrics, test_loss)
+            log_test_metrics(config_manager, test_metrics, test_loss)
         log_runtime(config_manager, start_time, end_time)
 
     if not config_manager.configuration.disable_epsilon_logging:
