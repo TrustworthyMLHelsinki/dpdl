@@ -21,6 +21,21 @@ SAFE_WEIGHTS_INDEX_NAME = "model.safetensors.index.json"
 SAFE_WEIGHTS_NAME = "model.safetensors"
 
 
+def register_custom_huggingface_models():
+    """Register custom classification adapters with Transformers.
+
+    E.g. VaultGemma is not registered for sequence classification. Here we register
+    it, so that the transformers module's Auto -methods can find it.
+    """
+    from transformers import AutoModelForSequenceClassification, VaultGemmaConfig
+
+    from .vaultgemma import VaultGemmaForSequenceClassification
+
+    AutoModelForSequenceClassification.register(
+        VaultGemmaConfig, VaultGemmaForSequenceClassification, exist_ok=True
+    )
+
+
 def download_safetensors(model_name):
     """
         Load model directly from HuggingFace
@@ -91,17 +106,17 @@ def download_generic_huggingface_model(
         if num_labels is not None:
             load_kwargs["num_labels"] = num_labels
 
-        model = AutoModelForSequenceClassification.from_pretrained(
-            checkpoint_or_not(model_name, checkpoint_dir, peft), device_map="cuda:0", **load_kwargs
-        )
+        model_path = checkpoint_or_not(model_name, checkpoint_dir, peft)
+        model = AutoModelForSequenceClassification.from_pretrained(model_path, **load_kwargs)
 
         # Freeze embedding layer that doesn't work for Opacus
         model_type = model.config.model_type  # e.g., 'bert', 'roberta', 'distilbert'
 
         if hasattr(model, model_type):
             base_model = getattr(model, model_type)
-            for param in base_model.embeddings.parameters():
-                param.requires_grad = False
+            if hasattr(base_model, 'embeddings'):
+                for param in base_model.embeddings.parameters():
+                    param.requires_grad = False
 
     else:
         model = AutoModelForCausalLM.from_pretrained(
@@ -163,6 +178,7 @@ class HuggingfaceLanguageModel(torch.nn.Module):
     ):
 
         super().__init__()
+        register_custom_huggingface_models()
 
         self.ignore_index = ignore_index
         self.peft = peft
@@ -203,30 +219,9 @@ class HuggingfaceLanguageModel(torch.nn.Module):
         return out
 
     def forward_features(self, x):
-        """
-        Extract hidden features prior to classification/LM head.
-
-        - Sequence classification models:
-            * Prefer pooler_output, e.g., BERT.
-            * Otherwise fallback to CLS token of last_hidden_state.
-        - Causal LMs:
-            * Return last_hidden_state (sequence length, hidden_size).
-        """
-        if isinstance(x, Mapping):
-            out = self.model(**x, return_dict=True, output_hidden_states=True)
-        else:
-            out = self.model(x, return_dict=True, output_hidden_states=True)
-
-        if self.is_seq_classification:
-            # BERT-style: has pooler_output
-            if hasattr(out, "pooler_output") and out.pooler_output is not None:
-                return out.pooler_output  # (batch_size, hidden_size)
-
-            # Otherwise: fallback to CLS token of final hidden state
-            return out.last_hidden_state[:, 0, :]  # (batch_size, hidden_size)
-
-        # Causal LM: return final hidden states (all tokens)
-        return out.last_hidden_state  # (batch_size, seq_len, hidden_size)
+        raise NotImplementedError(
+            'Feature caching for Hugging Face language models is not implemented.'
+        )
 
     def forward_head(self, features):
 
